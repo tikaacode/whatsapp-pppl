@@ -1,0 +1,19 @@
+# Environment & Secret Configs
+.env
+.env.*
+!.env.example
+config/database.local.php
+
+# Logs & Temporary files
+*.log
+*.tmp
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.sublime-workspace
