@@ -78,3 +78,4 @@ try {
     // Pada file template contoh, $pdo diatur null jika koneksi belum dikonfigurasi
     $pdo = null;
 }
+

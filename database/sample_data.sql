@@ -175,3 +175,4 @@ INSERT INTO tbl_kunci_publik (id_kunci, id_pengguna, jenis_kunci, kunci_publik, 
 -- Kunci untuk Raihandy Wijaya (id: 5)
 (6, 5, 'identity_key',    'handy_ik_88f9c0b1e38d2a409f4e3a6c1b5d0e7f2345678901abcdef2345678901abcdef', NOW() - INTERVAL 7 DAY),
 (7, 5, 'signed_prekey',   'handy_spk_c1d0e9f80716345678901abcdef2345678901abcdef2345678901abcdef23', NOW() - INTERVAL 7 DAY);
+
