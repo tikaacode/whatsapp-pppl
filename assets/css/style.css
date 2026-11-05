@@ -1,0 +1,105 @@
+/* ==========================================================================
+   WhatsApp Web Custom Stylesheet
+   Frontend: Clara Uenike Meylan Langi (10241018)
+   ========================================================================== */
+
+/* 1. Variabel Warna Resmi WhatsApp */
+:root {
+    --wa-primary: #128c7e;
+    --wa-primary-dark: #075e54;
+    --wa-accent: #25d366;
+    --wa-bg-body: #d1d7db;
+    --wa-bg-chat: #efeae2;
+    --wa-bubble-sent: #d9fdd3;
+    --wa-bubble-received: #ffffff;
+    --wa-gray-header: #f0f2f5;
+    --wa-text-primary: #111b21;
+    --wa-text-secondary: #667781;
+}
+
+/* 2. Styling Background & Scrollbar */
+body {
+    background: linear-gradient(to bottom, #00a884 0%, #00a884 127px, var(--wa-bg-body) 127px, var(--wa-bg-body) 100%);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--wa-text-primary);
+}
+
+/* Scrollbar tipis modern */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* 3. List Obrolan */
+.wa-chat-item {
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+.wa-chat-item:hover {
+    background-color: #f5f6f6;
+}
+.wa-chat-item.active {
+    background-color: #ebebeb !important;
+}
+.wa-chat-item .text-truncate {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.wa-avatar {
+    border-radius: 50%;
+}
+
+/* 4. Ruang Chat & Background */
+.wa-chat-pane {
+    background-color: var(--wa-bg-chat);
+    background-image: radial-gradient(#d3cbbd 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+
+/* 5. Gelembung Pesan (Chat Bubbles) & Metadata */
+.wa-message-bubble {
+    max-width: 65%;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.92rem;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+.wa-bubble-sent {
+    align-self: flex-end;
+    background-color: var(--wa-bubble-sent);
+    border-top-right-radius: 2px;
+}
+.wa-bubble-received {
+    align-self: flex-start;
+    background-color: var(--wa-bubble-received);
+    border-top-left-radius: 2px;
+}
+.wa-msg-meta {
+    font-size: 0.7rem;
+    color: var(--wa-text-secondary);
+    float: right;
+    margin-left: 8px;
+    margin-top: 4px;
+}
+.bi-check2-all.text-primary {
+    color: #53bdeb !important; /* Centang biru WhatsApp */
+}
+
+/* 6. Tombol Kirim */
+#sendBtn {
+    background-color: var(--wa-primary);
+    border: none;
+    transition: background-color 0.2s;
+}
+#sendBtn:hover {
+    background-color: var(--wa-primary-dark);
+}
