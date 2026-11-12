@@ -706,3 +706,4 @@ try {
         'message' => 'Terjadi kesalahan server: ' . $e->getMessage()
     ], JSON_UNESCAPED_UNICODE);
 }
+
