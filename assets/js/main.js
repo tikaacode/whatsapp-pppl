@@ -7,16 +7,102 @@
  * ==============================================================================
  */
 
+// ------------------------------------------------------------------------------
+// API CLIENT (FETCH) KE BACKEND
+// ------------------------------------------------------------------------------
+
+/**
+ * Wrapper fetch: selalu kirim cookie sesi, parse JSON, lempar Error jika gagal.
+ */
+async function apiRequest(url, options = {}) {
+    const headers = Object.assign({ 'Accept': 'application/json' }, options.headers || {});
+    const response = await fetch(url, Object.assign({}, options, {
+        credentials: 'same-origin',
+        headers: headers
+    }));
+
+    let payload = null;
+    try {
+        payload = await response.json();
+    } catch (e) {
+        // respons bukan JSON
+    }
+
+    if (!response.ok || !payload || payload.success === false) {
+        const message = payload && payload.message ? payload.message : `HTTP error! status: ${response.status}`;
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+    }
+    return payload;
+}
+
+/**
+ * Mengambil daftar kontak + pesan terakhir.
+ * @returns {Promise<Array|null>} array kontak, atau null jika gagal (mis. belum login)
+ */
+async function fetchContacts() {
+    try {
+        const payload = await apiRequest('api/contacts.php?action=list');
+        return payload.data || [];
+    } catch (error) {
+        console.warn('[API] Gagal mengambil kontak dari backend:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Memulai (atau mengambil) percakapan dengan seorang kontak.
+ * @param {number} contactId id_pengguna kontak
+ * @returns {Promise<number>} id_percakapan
+ */
+async function startConversation(contactId) {
+    const payload = await apiRequest('api/contacts.php?action=start_conversation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contact_id: contactId })
+    });
+    return payload.data.conversation_id;
+}
+
+/**
+ * Mengambil riwayat pesan. Jika sinceId > 0 hanya pesan baru (untuk polling).
+ * @returns {Promise<Array>}
+ */
+async function fetchMessages(conversationId, sinceId = 0) {
+    let url = `api/messages.php?conversation_id=${encodeURIComponent(conversationId)}`;
+    if (sinceId > 0) {
+        url += `&since_id=${encodeURIComponent(sinceId)}`;
+    }
+    const payload = await apiRequest(url);
+    return payload.data || [];
+}
+
+/**
+ * Mengirim pesan baru. Mengembalikan objek pesan yang tersimpan di database.
+ * @returns {Promise<Object>}
+ */
+async function postMessage(conversationId, text) {
+    const payload = await apiRequest('api/messages.php?action=send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            conversation_id: conversationId,
+            message_text: text
+        })
+    });
+    return payload.data;
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     'use strict';
 
     // --------------------------------------------------------------------------
-    // 1. ELEMEN DOM UTAMA
+    // 1. ELEMEN DOM UTAMA & STATE
     // --------------------------------------------------------------------------
     const chatForm = document.getElementById('sendMessageForm');
     const messageInput = document.getElementById('messageInput');
     const messagesContainer = document.getElementById('messagesContainer');
-    const chatItems = document.querySelectorAll('#chats-pane .wa-chat-item');
     const currentChatName = document.getElementById('currentChatName');
     const currentChatAvatar = document.getElementById('currentChatAvatar');
     const currentChatStatus = document.getElementById('currentChatStatus');
@@ -26,140 +112,309 @@ document.addEventListener('DOMContentLoaded', function () {
     const chatsPane = document.getElementById('chats-pane');
     const statusPane = document.getElementById('status-pane');
 
+    // Wadah daftar kontak = induk dari item chat statis pertama (atau chats-pane)
+    const firstStaticItem = chatsPane ? chatsPane.querySelector('.wa-chat-item') : null;
+    const chatListEl = firstStaticItem ? firstStaticItem.parentElement : chatsPane;
+
+    const POLL_MESSAGES_MS = 3000;
+    const REFRESH_CONTACTS_MS = 10000;
+
+    let activeContactId = null;       // id_pengguna lawan bicara yang sedang dibuka
+    let currentConversationId = null; // id_percakapan aktif
+    let lastMessageId = 0;            // id_pesan terbesar yang sudah tampil
+    const renderedMessageIds = new Set();
+    let openToken = 0;                // mencegah balapan saat pindah chat cepat
+    let pollTimer = null;
+    let isSending = false;
+
     // --------------------------------------------------------------------------
     // 2. FUNGSI PEMBANTU (HELPERS & SANITASI XSS)
     // --------------------------------------------------------------------------
 
-    /**
-     * Membersihkan teks masukan pengguna dari karakter HTML berbahaya (Mencegah XSS)
-     * @param {string} text
-     * @returns {string}
-     */
     function escapeHtml(text) {
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return String(text).replace(/[&<>"']/g, function (m) {
-            return map[m];
-        });
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+        return String(text).replace(/[&<>"']/g, function (m) { return map[m]; });
     }
 
-    /**
-     * Mendapatkan waktu saat ini dalam format jam HH:mm (contoh: 14:25)
-     * @returns {string}
-     */
     function getCurrentTime() {
         const now = new Date();
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        return `${hours}:${minutes}`;
+        return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     }
 
-    /**
-     * Menggulir otomatis wadah pesan ke paling bawah
-     */
     function scrollToBottom() {
         if (!messagesContainer) return;
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
+    function getInitials(name) {
+        const parts = String(name || '?').trim().split(/\s+/);
+        const initials = parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2);
+        return initials.toUpperCase();
+    }
+
+    /** "YYYY-MM-DD HH:MM:SS" -> teks status "terakhir dilihat ..." */
+    function formatLastSeen(timestamp) {
+        if (!timestamp) return 'online';
+        const date = new Date(String(timestamp).replace(' ', 'T'));
+        if (isNaN(date.getTime())) return 'online';
+
+        const hhmm = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+        const today = new Date();
+        const yesterday = new Date();
+        yesterday.setDate(today.getDate() - 1);
+
+        if (date.toDateString() === today.toDateString()) return `terakhir dilihat hari ini pukul ${hhmm}`;
+        if (date.toDateString() === yesterday.toDateString()) return `terakhir dilihat kemarin pukul ${hhmm}`;
+        return `terakhir dilihat ${date.toLocaleDateString('id-ID')} pukul ${hhmm}`;
+    }
+
+    function statusIconHtml(status, extraClass) {
+        const cls = extraClass || '';
+        if (status === 'dibaca') return `<i class="bi bi-check2-all text-primary ${cls}" title="Dibaca"></i>`;
+        if (status === 'diterima') return `<i class="bi bi-check2-all text-secondary ${cls}" title="Diterima"></i>`;
+        return `<i class="bi bi-check2 text-secondary ${cls}" title="Terkirim"></i>`;
+    }
+
     // --------------------------------------------------------------------------
-    // 3. PEMILIHAN KONTAK OBROLAN (SWITCH ACTIVE CHAT - BAGIAN 4.1)
+    // 3. DAFTAR KONTAK DARI DATABASE (api/contacts.php?action=list)
     // --------------------------------------------------------------------------
-    chatItems.forEach(item => {
-        item.addEventListener('click', function () {
-            // Hapus kelas .active dari kontak obrolan sebelumnya
-            chatItems.forEach(i => i.classList.remove('active'));
 
-            // Tambahkan kelas .active pada kontak yang baru diklik
-            this.classList.add('active');
+    function renderContacts(contacts) {
+        if (!chatListEl) return;
+        chatListEl.innerHTML = '';
 
-            // Ambil data kontak dari atribut elemen
-            const contactName = this.getAttribute('data-contact') || 'Kontak';
-            const contactPhone = this.getAttribute('data-phone') || '';
-            const avatarElem = this.querySelector('.wa-avatar');
+        if (!contacts.length) {
+            chatListEl.innerHTML = '<div class="p-4 text-center text-secondary">Belum ada kontak.</div>';
+            return;
+        }
 
-            // Perbarui header obrolan aktif secara dinamis
-            if (currentChatName) {
-                currentChatName.textContent = contactName;
+        contacts.forEach(function (c) {
+            const item = document.createElement('div');
+            item.className = 'wa-chat-item d-flex align-items-center p-3' +
+                (c.contact_id === activeContactId ? ' active' : '');
+            item.dataset.contact = c.name;
+            item.dataset.phone = c.phone || '';
+            item.dataset.contactId = c.contact_id;
+            item.dataset.conversationId = c.conversation_id || '';
+            item.dataset.lastSeen = c.last_seen || '';
+
+            const last = c.last_message;
+            const previewText = last
+                ? (last.is_mine ? statusIconHtml(last.status, 'me-1') : '') + escapeHtml(last.text)
+                : '<span class="fst-italic">Belum ada pesan</span>';
+            const timeText = last ? escapeHtml(last.time) : '';
+            const unreadBadge = c.unread_count > 0 && c.contact_id !== activeContactId
+                ? `<span class="badge bg-success rounded-pill ms-2">${c.unread_count}</span>`
+                : '';
+            const timeClass = c.unread_count > 0 && c.contact_id !== activeContactId
+                ? 'text-success fw-semibold' : 'text-secondary';
+
+            item.innerHTML = `
+                <div class="wa-avatar">${escapeHtml(getInitials(c.name))}</div>
+                <div class="flex-grow-1 ms-3 overflow-hidden">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold text-truncate">${escapeHtml(c.name)}</span>
+                        <small class="wa-msg-meta ${timeClass}">${timeText}</small>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span class="text-secondary text-truncate">${previewText}</span>
+                        ${unreadBadge}
+                    </div>
+                </div>
+            `;
+            chatListEl.appendChild(item);
+        });
+    }
+
+    async function loadContacts() {
+        const contacts = await fetchContacts();
+        // null = gagal (mis. belum login) -> biarkan tampilan statis simulasi Clara
+        if (contacts !== null) {
+            renderContacts(contacts);
+        }
+        return contacts;
+    }
+
+    // --------------------------------------------------------------------------
+    // 4. BUBBLE PESAN & RIWAYAT OBROLAN (api/messages.php)
+    // --------------------------------------------------------------------------
+
+    function appendBubble(msg) {
+        if (!messagesContainer || renderedMessageIds.has(msg.id)) return;
+        renderedMessageIds.add(msg.id);
+        lastMessageId = Math.max(lastMessageId, msg.id);
+
+        const bubble = document.createElement('div');
+        bubble.className = 'wa-message-bubble ' + (msg.is_mine ? 'wa-bubble-sent' : 'wa-bubble-received');
+        bubble.dataset.messageId = msg.id;
+        bubble.innerHTML = `
+            <div>${escapeHtml(msg.text)}</div>
+            <span class="wa-msg-meta">${escapeHtml(msg.time)} ${msg.is_mine ? statusIconHtml(msg.status, 'ms-1') : ''}</span>
+        `;
+        messagesContainer.appendChild(bubble);
+    }
+
+    function resetMessageState() {
+        renderedMessageIds.clear();
+        lastMessageId = 0;
+        if (messagesContainer) messagesContainer.innerHTML = '';
+    }
+
+    function stopMessagePolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function startMessagePolling() {
+        stopMessagePolling();
+        pollTimer = setInterval(async function () {
+            if (document.hidden || !currentConversationId) return;
+            const convId = currentConversationId;
+            try {
+                const newMessages = await fetchMessages(convId, lastMessageId);
+                if (convId !== currentConversationId || !newMessages.length) return;
+                newMessages.forEach(appendBubble);
+                scrollToBottom();
+            } catch (error) {
+                console.warn('[Polling] Gagal mengambil pesan baru:', error.message);
             }
+        }, POLL_MESSAGES_MS);
+    }
 
-            if (currentChatAvatar && avatarElem) {
-                currentChatAvatar.textContent = avatarElem.textContent.trim();
-                currentChatAvatar.className = avatarElem.className;
-            }
+    // --------------------------------------------------------------------------
+    // 5. PEMILIHAN KONTAK OBROLAN (SWITCH ACTIVE CHAT)
+    // --------------------------------------------------------------------------
 
+    async function openChat(item) {
+        const token = ++openToken;
+        stopMessagePolling();
+
+        chatListEl.querySelectorAll('.wa-chat-item').forEach(function (i) { i.classList.remove('active'); });
+        item.classList.add('active');
+
+        const contactName = item.getAttribute('data-contact') || 'Kontak';
+        const contactPhone = item.getAttribute('data-phone') || '';
+        const avatarElem = item.querySelector('.wa-avatar');
+
+        if (currentChatName) currentChatName.textContent = contactName;
+        if (currentChatAvatar && avatarElem) {
+            currentChatAvatar.textContent = avatarElem.textContent.trim();
+            currentChatAvatar.className = avatarElem.className;
+        }
+
+        const unreadBadge = item.querySelector('.badge.bg-success');
+        if (unreadBadge) unreadBadge.remove();
+
+        const contactId = Number(item.dataset.contactId) || null;
+
+        // Item statis simulasi (bukan dari database): perilaku lama Clara
+        if (!contactId) {
+            activeContactId = null;
+            currentConversationId = null;
             if (currentChatStatus) {
-                // Tentukan status tampilan kontak aktif
-                if (contactName === 'Budi Santoso') {
-                    currentChatStatus.textContent = 'online';
-                } else if (contactName === 'Clara Meylan') {
-                    currentChatStatus.textContent = 'terakhir dilihat hari ini pukul 09:40';
-                } else if (contactName === 'Zaldy Firaz') {
-                    currentChatStatus.textContent = 'terakhir dilihat kemarin pukul 21:15';
-                } else {
-                    currentChatStatus.textContent = contactPhone ? contactPhone : 'online';
-                }
+                if (contactName === 'Budi Santoso') currentChatStatus.textContent = 'online';
+                else if (contactName === 'Clara Meylan') currentChatStatus.textContent = 'terakhir dilihat hari ini pukul 09:40';
+                else if (contactName === 'Zaldy Firaz') currentChatStatus.textContent = 'terakhir dilihat kemarin pukul 21:15';
+                else currentChatStatus.textContent = contactPhone || 'online';
             }
+            return;
+        }
 
-            // Hapus badge notifikasi unread jika ada saat kontak dibuka
-            const unreadBadge = this.querySelector('.badge.bg-success');
-            if (unreadBadge) {
-                unreadBadge.remove();
+        // Item dari database
+        activeContactId = contactId;
+        if (currentChatStatus) currentChatStatus.textContent = formatLastSeen(item.dataset.lastSeen);
+        resetMessageState();
+        currentConversationId = null;
+
+        try {
+            let conversationId = Number(item.dataset.conversationId) || null;
+            if (!conversationId) {
+                conversationId = await startConversation(contactId);
+                item.dataset.conversationId = conversationId;
+            }
+            if (token !== openToken) return; // user sudah pindah chat
+
+            const messages = await fetchMessages(conversationId);
+            if (token !== openToken) return;
+
+            currentConversationId = conversationId;
+            messages.forEach(appendBubble);
+            scrollToBottom();
+            startMessagePolling();
+        } catch (error) {
+            console.warn('[Chat] Gagal membuka percakapan:', error.message);
+        }
+    }
+
+    if (chatsPane) {
+        chatsPane.addEventListener('click', function (e) {
+            const item = e.target.closest('.wa-chat-item');
+            if (item && chatsPane.contains(item)) {
+                openChat(item);
             }
         });
-    });
+    }
 
     // --------------------------------------------------------------------------
-    // 4. SIMULASI & PENANGANAN PENGIRIMAN PESAN TEKS (BAGIAN 4.2)
+    // 6. PENGIRIMAN PESAN TEKS
     // --------------------------------------------------------------------------
-    function sendMessage() {
-        if (!messageInput || !messagesContainer) return;
 
-        // Ambil teks dari #messageInput
+    function updateSidebarPreview(text, timeStr, status) {
+        const activeItem = document.querySelector('#chats-pane .wa-chat-item.active');
+        if (!activeItem) return;
+
+        const previewText = activeItem.querySelector('.text-secondary.text-truncate');
+        const metaTime = activeItem.querySelector('.wa-msg-meta');
+
+        if (previewText) {
+            previewText.innerHTML = `${statusIconHtml(status || 'terkirim', 'me-1')}${escapeHtml(text)}`;
+        }
+        if (metaTime) {
+            metaTime.textContent = timeStr;
+            metaTime.classList.remove('text-success', 'fw-semibold');
+        }
+    }
+
+    async function sendMessage() {
+        if (!messageInput || !messagesContainer || isSending) return;
+
         const text = messageInput.value.trim();
-
-        // Jika kosong atau hanya spasi, batalkan pengiriman
         if (text === '') return;
 
-        // Format waktu saat ini (HH:mm)
-        const timeStr = getCurrentTime();
+        // Mode backend: percakapan dari database sedang terbuka
+        if (currentConversationId) {
+            isSending = true;
+            messageInput.value = '';
+            try {
+                const saved = await postMessage(currentConversationId, text);
+                appendBubble(saved);
+                updateSidebarPreview(saved.text, saved.time, saved.status);
+                scrollToBottom();
+            } catch (error) {
+                console.warn('[Chat] Gagal mengirim pesan:', error.message);
+                messageInput.value = text; // kembalikan agar tidak hilang
+            } finally {
+                isSending = false;
+                messageInput.focus();
+            }
+            return;
+        }
 
-        // Buat elemen bubble pesan terkirim baru (.wa-bubble-sent)
+        // Mode simulasi lokal (kontak statis / belum login)
+        const timeStr = getCurrentTime();
         const bubble = document.createElement('div');
         bubble.className = 'wa-message-bubble wa-bubble-sent';
         bubble.innerHTML = `
             <div>${escapeHtml(text)}</div>
             <span class="wa-msg-meta">${timeStr} <i class="bi bi-check2 text-secondary ms-1" title="Terkirim"></i></span>
         `;
-
-        // Masukkan ke wadah pesan
         messagesContainer.appendChild(bubble);
 
-        // Kosongkan kolom input dan fokuskan kembali kursor
         messageInput.value = '';
         messageInput.focus();
-
-        // Perbarui teks cuplikan pesan terakhir pada kontak aktif di sidebar kiri
-        const activeItem = document.querySelector('#chats-pane .wa-chat-item.active');
-        if (activeItem) {
-            const previewText = activeItem.querySelector('.text-secondary.text-truncate');
-            const metaTime = activeItem.querySelector('.wa-msg-meta');
-
-            if (previewText) {
-                previewText.innerHTML = `<i class="bi bi-check2 text-secondary me-1"></i>${escapeHtml(text)}`;
-            }
-            if (metaTime) {
-                metaTime.textContent = timeStr;
-                metaTime.classList.remove('text-success', 'fw-semibold');
-            }
-        }
-
-        // Gulir otomatis wadah pesan ke paling bawah
+        updateSidebarPreview(text, timeStr, 'terkirim');
         scrollToBottom();
     }
 
@@ -181,7 +436,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // --------------------------------------------------------------------------
-    // 5. NAVIGASI TAB CHAT & STATUS DENGAN MODAL HELPER (BAGIAN 4.3)
+    // 7. NAVIGASI TAB CHAT & STATUS DENGAN MODAL HELPER
     // --------------------------------------------------------------------------
     if (chatsTab && statusTab && chatsPane && statusPane) {
         chatsTab.addEventListener('click', function () {
@@ -199,10 +454,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    /**
-     * Helper untuk membuka modal penampil status secara terprogram
-     * @param {HTMLElement} statusItem
-     */
     window.openStatusModal = function (statusItem) {
         const viewStatusModalEl = document.getElementById('viewStatusModal');
         if (!viewStatusModalEl || !window.bootstrap) return;
@@ -211,91 +462,12 @@ document.addEventListener('DOMContentLoaded', function () {
         modalInstance.show(statusItem);
     };
 
-    // Gulir otomatis saat pertama kali halaman dimuat
+    // --------------------------------------------------------------------------
+    // 8. INISIALISASI: MUAT KONTAK & REFRESH BERKALA
+    // --------------------------------------------------------------------------
     scrollToBottom();
+    loadContacts();
+    setInterval(function () {
+        if (!document.hidden) loadContacts();
+    }, REFRESH_CONTACTS_MS);
 });
-
-// ------------------------------------------------------------------------------
-// 6. PERSIAPAN ARSITEKTUR FETCH API UNTUK BACKEND (BAGIAN 4.4)
-// Modul placeholder async siap integrasi ke endpoint API (Tika / Zaldy)
-// ------------------------------------------------------------------------------
-
-/**
- * Mengambil daftar kontak obrolan dari endpoint backend
- * Endpoint target: api/contacts.php atau api/conversations.php
- * @returns {Promise<Array>}
- */
-async function fetchContacts() {
-    try {
-        const response = await fetch('api/contacts.php', {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json'
-            }
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.warn('[Fetch API Placeholder] Gagal mengambil kontak dari backend:', error);
-        return [];
-    }
-}
-
-/**
- * Mengambil riwayat pesan untuk percakapan tertentu dari backend
- * Endpoint target: api/messages.php?conversation_id={conversationId}
- * @param {string|number} conversationId
- * @returns {Promise<Array>}
- */
-async function fetchMessages(conversationId) {
-    try {
-        const response = await fetch(`api/messages.php?conversation_id=${encodeURIComponent(conversationId)}`, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json'
-            }
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.warn(`[Fetch API Placeholder] Gagal mengambil riwayat pesan untuk ID ${conversationId}:`, error);
-        return [];
-    }
-}
-
-/**
- * Mengirim pesan baru ke endpoint backend untuk disimpan di database
- * Endpoint target: api/messages.php
- * @param {string|number} conversationId
- * @param {string} text
- * @returns {Promise<Object|null>}
- */
-async function postMessage(conversationId, text) {
-    try {
-        const response = await fetch('api/messages.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify({
-                conversation_id: conversationId,
-                message: text
-            })
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const result = await response.json();
-        return result;
-    } catch (error) {
-        console.warn('[Fetch API Placeholder] Gagal mengirim pesan ke backend:', error);
-        return null;
-    }
-}
