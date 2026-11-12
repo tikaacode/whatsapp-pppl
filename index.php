@@ -25,10 +25,10 @@
                 <!-- Header Profil Pengguna Aktif -->
                 <div class="wa-header wa-sidebar-header">
                     <div class="d-flex align-items-center gap-2 min-width-0">
-                        <div class="wa-avatar bg-success text-white border border-white border-opacity-50">MR</div>
+                        <div class="wa-avatar bg-success text-white border border-white border-opacity-50" id="currentUserAvatar">MR</div>
                         <div class="min-width-0">
                             <div class="fw-bold lh-sm" style="font-size: 0.98rem;">WhatsApp</div>
-                            <div class="text-white-50 text-truncate" style="font-size: 0.72rem; max-width: 120px;">Muhammad Rifa</div>
+                            <div class="text-white-50 text-truncate" id="currentUserName" style="font-size: 0.72rem; max-width: 120px;">Muhammad Rifa</div>
                         </div>
                     </div>
                     <div class="d-flex align-items-center gap-3 flex-shrink-0">
@@ -336,7 +336,7 @@
                         <input type="text" inputmode="numeric" maxlength="1" class="form-control wa-otp-box" aria-label="Digit OTP 5" placeholder="•">
                         <input type="text" inputmode="numeric" maxlength="1" class="form-control wa-otp-box" aria-label="Digit OTP 6" placeholder="•">
                     </div>
-                    <button type="button" class="btn btn-success wa-btn-primary w-100 fw-semibold mb-2" id="btnVerifyOtp" data-bs-dismiss="modal">Verifikasi &amp; Masuk</button>
+                    <button type="button" class="btn btn-success wa-btn-primary w-100 fw-semibold mb-2" id="btnVerifyOtp">Verifikasi &amp; Masuk</button>
                     <div class="text-center mb-3">
                         <a href="#" id="btnPreviewNewUserProfile" class="small text-secondary text-decoration-none">Simulasi Pengguna Baru (Isi Profil UI-008) <i class="bi bi-arrow-right"></i></a>
                     </div>
@@ -542,6 +542,8 @@
         const loginStep2 = document.getElementById('loginStep2');
         const loginStep3 = document.getElementById('loginStep3');
         const btnRequestOtp = document.getElementById('btnRequestOtp');
+        const btnVerifyOtp = document.getElementById('btnVerifyOtp');
+        const btnSaveProfile = document.getElementById('btnSaveProfile');
         const btnBackToPhone = document.getElementById('btnBackToPhone');
         const btnPreviewNewUserProfile = document.getElementById('btnPreviewNewUserProfile');
         const btnBackToOtp = document.getElementById('btnBackToOtp');
@@ -552,7 +554,39 @@
         const otpResendTimer = document.getElementById('otpResendTimer');
         const btnResendOtp = document.getElementById('btnResendOtp');
         const otpBoxes = document.querySelectorAll('#otpInputsContainer .wa-otp-box');
+        const currentUserAvatar = document.getElementById('currentUserAvatar');
+        const currentUserName = document.getElementById('currentUserName');
         let countdownInterval = null;
+        let activePhoneNumber = '';
+
+        function updateHeaderProfile(name, avatar) {
+            if (currentUserName && name) {
+                currentUserName.textContent = name;
+            }
+            if (currentUserAvatar) {
+                if (avatar) {
+                    currentUserAvatar.style.backgroundImage = 'url("' + avatar + '")';
+                    currentUserAvatar.textContent = '';
+                } else if (name) {
+                    const initials = name.split(' ').map(n => n[0]).slice(0, 2).join('').toUpperCase();
+                    currentUserAvatar.textContent = initials || 'WA';
+                }
+            }
+        }
+
+        // Cek apakah ada sesi login aktif di server saat pertama dimuat
+        async function checkAuthSession() {
+            try {
+                const res = await fetch('api/auth.php?action=me');
+                const result = await res.json();
+                if (result.success && result.authenticated && result.data) {
+                    updateHeaderProfile(result.data.nama_profil, result.data.foto_profil);
+                }
+            } catch (err) {
+                console.warn('[Auth] Gagal memeriksa sesi awal:', err);
+            }
+        }
+        checkAuthSession();
 
         function startOtpCountdown(seconds) {
             if (!otpResendTimer) return;
@@ -581,18 +615,142 @@
             });
         }
 
+        // Action: Kirim Kode OTP (Terhubung ke api/auth.php)
         if (btnRequestOtp && loginStep1 && loginStep2) {
-            btnRequestOtp.addEventListener('click', function () {
-                if (loginPhoneInput && otpTargetPhone) {
-                    const code = loginCountryCode ? loginCountryCode.textContent : '+62';
-                    const phoneVal = loginPhoneInput.value.trim() || '812-3456-7890';
-                    otpTargetPhone.textContent = code + ' ' + phoneVal;
+            btnRequestOtp.addEventListener('click', async function () {
+                const code = loginCountryCode ? loginCountryCode.textContent.trim() : '+62';
+                const phoneVal = loginPhoneInput ? loginPhoneInput.value.trim() : '';
+                if (!phoneVal) {
+                    alert('Mohon masukkan nomor telepon Anda terlebih dahulu.');
+                    if (loginPhoneInput) loginPhoneInput.focus();
+                    return;
                 }
-                loginStep1.classList.add('d-none');
-                if (loginStep3) loginStep3.classList.add('d-none');
-                loginStep2.classList.remove('d-none');
-                startOtpCountdown(45);
-                if (otpBoxes.length > 0) otpBoxes[0].focus();
+                activePhoneNumber = code + phoneVal;
+
+                btnRequestOtp.disabled = true;
+                btnRequestOtp.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Mengirim...';
+
+                try {
+                    const res = await fetch('api/auth.php?action=send_otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ phone: activePhoneNumber })
+                    });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        if (otpTargetPhone) {
+                            otpTargetPhone.textContent = activePhoneNumber;
+                        }
+                        loginStep1.classList.add('d-none');
+                        if (loginStep3) loginStep3.classList.add('d-none');
+                        loginStep2.classList.remove('d-none');
+                        startOtpCountdown(45);
+
+                        // Isi otomatis kode debug di testing localhost
+                        if (data.data && data.data.otp_debug && otpBoxes.length === 6) {
+                            const codeStr = String(data.data.otp_debug);
+                            otpBoxes.forEach((b, i) => b.value = codeStr[i] || '');
+                            console.log('[Auth Debug] Kode OTP yang dikirim:', codeStr);
+                        }
+                        if (otpBoxes.length > 0) otpBoxes[0].focus();
+                    } else {
+                        alert(data.message || 'Gagal mengirim kode verifikasi.');
+                    }
+                } catch (err) {
+                    console.error('[Auth Error]', err);
+                    alert('Gagal terhubung ke server autentikasi.');
+                } finally {
+                    btnRequestOtp.disabled = false;
+                    btnRequestOtp.innerHTML = 'Kirim Kode OTP';
+                }
+            });
+        }
+
+        // Action: Verifikasi 6-Digit OTP (Terhubung ke api/auth.php)
+        if (btnVerifyOtp && loginStep2) {
+            btnVerifyOtp.addEventListener('click', async function () {
+                let otpVal = '';
+                otpBoxes.forEach(b => otpVal += b.value.trim());
+
+                if (otpVal.length < 6) {
+                    alert('Mohon masukkan 6 digit kode OTP secara lengkap.');
+                    return;
+                }
+
+                btnVerifyOtp.disabled = true;
+                btnVerifyOtp.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Memverifikasi...';
+
+                try {
+                    const res = await fetch('api/auth.php?action=verify_otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ phone: activePhoneNumber, otp: otpVal })
+                    });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        updateHeaderProfile(data.data.nama_profil, data.data.foto_profil);
+                        
+                        // Tutup modal login jika verifikasi sukses
+                        const loginModalEl = document.getElementById('loginModal');
+                        if (loginModalEl && window.bootstrap) {
+                            const modal = bootstrap.Modal.getInstance(loginModalEl);
+                            if (modal) modal.hide();
+                        }
+                        alert('Verifikasi berhasil! Selamat datang, ' + data.data.nama_profil);
+                    } else {
+                        alert(data.message || 'Kode OTP tidak valid.');
+                    }
+                } catch (err) {
+                    console.error('[Auth Error]', err);
+                    alert('Terjadi kesalahan saat memverifikasi kode OTP.');
+                } finally {
+                    btnVerifyOtp.disabled = false;
+                    btnVerifyOtp.innerHTML = 'Verifikasi & Masuk';
+                }
+            });
+        }
+
+        // Action: Simpan Profil Pengguna Baru (Terhubung ke api/auth.php)
+        if (btnSaveProfile) {
+            btnSaveProfile.addEventListener('click', async function () {
+                const nameInput = document.getElementById('profileNameInput');
+                const namaVal = nameInput ? nameInput.value.trim() : '';
+
+                if (!namaVal) {
+                    alert('Nama lengkap wajib diisi untuk membuat profil.');
+                    if (nameInput) nameInput.focus();
+                    return;
+                }
+
+                let otpVal = '';
+                otpBoxes.forEach(b => otpVal += b.value.trim());
+                if (!otpVal) otpVal = '123456';
+
+                try {
+                    const res = await fetch('api/auth.php?action=verify_otp', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ phone: activePhoneNumber, otp: otpVal, nama_profil: namaVal })
+                    });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        updateHeaderProfile(data.data.nama_profil, data.data.foto_profil);
+                        const loginModalEl = document.getElementById('loginModal');
+                        if (loginModalEl && window.bootstrap) {
+                            const modal = bootstrap.Modal.getInstance(loginModalEl);
+                            if (modal) modal.hide();
+                        }
+                        alert('Profil Anda berhasil disimpan!');
+                    } else {
+                        alert(data.message || 'Gagal menyimpan profil.');
+                    }
+                } catch (err) {
+                    console.error('[Auth Error]', err);
+                    alert('Terjadi kesalahan saat menyimpan profil.');
+                }
             });
         }
 
