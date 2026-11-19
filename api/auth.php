@@ -107,8 +107,6 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
     $action = $input['action'] ?? 'me';
 
     try {
-        $pdo = getDbConnection();
-
         switch ($action) {
             /**
              * ------------------------------------------------------------------
@@ -117,6 +115,7 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
              * ------------------------------------------------------------------
              */
             case 'send_otp':
+                $pdo = getDbConnection();
                 $rawPhone = $input['phone'] ?? $input['phone_number'] ?? $input['no_telepon'] ?? '';
                 $phone = normalizePhoneNumber($rawPhone);
 
@@ -165,6 +164,7 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
              * ------------------------------------------------------------------
              */
             case 'verify_otp':
+                $pdo = getDbConnection();
                 $rawPhone = $input['phone'] ?? $input['phone_number'] ?? $input['no_telepon'] ?? '';
                 $phone = normalizePhoneNumber($rawPhone);
                 $otpInput = trim($input['otp'] ?? $input['otp_code'] ?? '');
@@ -208,6 +208,7 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
                 $stmt = $pdo->prepare('SELECT * FROM tbl_pengguna WHERE no_telepon = :phone LIMIT 1');
                 $stmt->execute([':phone' => $phone]);
                 $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                $isNewUser = !$user;
 
                 if (!$user) {
                     // Pengguna Baru (UI-008): Daftarkan ke database
@@ -249,7 +250,8 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
                         'no_telepon'  => $user['no_telepon'],
                         'nama_profil' => $user['nama_profil'],
                         'foto_profil' => $user['foto_profil'],
-                        'about'       => $user['about']
+                        'about'       => $user['about'],
+                        'is_new_user' => $isNewUser
                     ]
                 ]);
                 break;
@@ -315,6 +317,7 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
              * ------------------------------------------------------------------
              */
             case 'switch_user':
+                $pdo = getDbConnection();
                 $targetId = isset($input['user_id']) ? (int)$input['user_id'] : 1;
                 $stmt = $pdo->prepare('SELECT * FROM tbl_pengguna WHERE id_pengguna = :id LIMIT 1');
                 $stmt->execute([':id' => $targetId]);
@@ -336,6 +339,67 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
                     'message' => 'Berhasil beralih ke akun: ' . htmlspecialchars($user['nama_profil']),
                     'data'    => $user
                 ]);
+                break;
+
+            /**
+             * ------------------------------------------------------------------
+             * ACTION: update_profile (UI-008)
+             * Memperbarui nama profil pengguna yang sedang login.
+             * ------------------------------------------------------------------
+             */
+            case 'update_profile':
+                $userId = requireAuth();
+                $pdo = getDbConnection();
+                $namaProfil = trim((string)($input['nama_profil'] ?? ''));
+
+                if ($namaProfil === '' || mb_strlen($namaProfil) > 100) {
+                    http_response_code(400);
+                    echo json_encode([
+                        'success' => false,
+                        'message' => 'Nama profil wajib diisi (maksimal 100 karakter).'
+                    ]);
+                    exit;
+                }
+
+                $updStmt = $pdo->prepare('UPDATE tbl_pengguna SET nama_profil = :nama, last_seen = NOW() WHERE id_pengguna = :id');
+                $updStmt->execute([
+                    ':nama' => $namaProfil,
+                    ':id'   => $userId
+                ]);
+
+                $_SESSION['user_name'] = $namaProfil;
+
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Profil berhasil diperbarui.',
+                    'data'    => getCurrentUser()
+                ]);
+                break;
+
+            /**
+             * ------------------------------------------------------------------
+             * ACTION: demo_users
+             * Mengambil daftar akun praktikum untuk quick-switch di antarmuka demo.
+             * ------------------------------------------------------------------
+             */
+            case 'demo_users':
+                try {
+                    $pdo = getDbConnection();
+                    $stmtUsers = $pdo->query('SELECT id_pengguna, no_telepon, nama_profil, foto_profil FROM tbl_pengguna ORDER BY id_pengguna ASC LIMIT 20');
+                    $users = $stmtUsers->fetchAll(PDO::FETCH_ASSOC);
+
+                    echo json_encode([
+                        'success'      => true,
+                        'db_available' => true,
+                        'data'         => $users
+                    ]);
+                } catch (PDOException $e) {
+                    echo json_encode([
+                        'success'      => true,
+                        'db_available' => false,
+                        'data'         => []
+                    ]);
+                }
                 break;
 
             default:

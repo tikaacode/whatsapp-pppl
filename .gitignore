@@ -17,3 +17,8 @@ desktop.ini
 .vscode/
 .idea/
 *.sublime-workspace
+
+# Frontend build dependencies (compiled bundle in assets/app/ is committed for zero-setup PHP hosting)
+frontend/node_modules/
+frontend/.vite/
+
