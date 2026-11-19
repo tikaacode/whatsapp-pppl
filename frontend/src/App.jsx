@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle,
   Aperture,
@@ -73,6 +73,65 @@ function TickIcon({ tick }) {
   }
   return <Check className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />;
 }
+
+const ChatComposer = React.memo(function ChatComposer({
+  isDark,
+  isSending,
+  onSendMessage,
+}) {
+  const [text, setText] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed || isSending) return;
+    setText('');
+    const ok = await onSendMessage(trimmed);
+    if (!ok) {
+      setText(trimmed);
+    }
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="px-4 md:px-6 py-3 shrink-0 flex items-center gap-2.5"
+    >
+      <StageGlass
+        isDark={isDark}
+        variant="elevated"
+        radius={999}
+        className="flex-1"
+        innerClassName="px-4 py-2.5 flex items-center"
+      >
+        <input
+          id="chat-input-field"
+          name="message"
+          type="text"
+          autoComplete="off"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Ketik pesan terenkripsi..."
+          className="w-full bg-transparent text-[13px] text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
+        />
+      </StageGlass>
+
+      <StageGlass
+        as="button"
+        type="submit"
+        isDark={isDark}
+        variant="emeraldOrb"
+        radius={22}
+        disabled={isSending}
+        aria-label="Kirim pesan"
+        className="w-11 h-11 shrink-0 cursor-pointer active:scale-95 transition-transform disabled:opacity-70"
+        innerClassName="flex items-center justify-center text-white"
+      >
+        <Send className="w-4 h-4 -translate-x-px" />
+      </StageGlass>
+    </form>
+  );
+});
 
 function normalizeBackendContact(c, existingMessages = []) {
   const name = c.name || c.profile_name || 'Kontak';
@@ -180,9 +239,9 @@ export default function App() {
 
   // Chats & Messages State
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [contacts, setContacts] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
-  const [chatInput, setChatInput] = useState('');
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
@@ -334,13 +393,13 @@ export default function App() {
       try {
         const contactsRes = await fetchContacts();
         const rows = Array.isArray(contactsRes.data) ? contactsRes.data : [];
+        loadedContacts = rows.map((row) => normalizeBackendContact(row, []));
         setContacts((prev) => {
           const msgMap = new Map(prev.map((p) => [p.id, p.messages || []]));
-          const mapped = rows.map((row) =>
-            normalizeBackendContact(row, msgMap.get(String(row.contact_id)) || [])
-          );
-          loadedContacts = mapped;
-          return mapped;
+          return loadedContacts.map((item) => ({
+            ...item,
+            messages: msgMap.get(item.id) || [],
+          }));
         });
       } catch {
         // Keep current contacts
@@ -716,48 +775,50 @@ export default function App() {
     await loadMessagesForContact(target, true);
   };
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!activeContact || isSendingMessage) return;
-    const text = chatInput.trim();
-    if (!text) return;
+  const handleSendMessage = useCallback(
+    async (rawText) => {
+      if (!activeContact || isSendingMessage) return false;
+      const text = String(rawText || '').trim();
+      if (!text) return false;
 
-    setIsSendingMessage(true);
-    setChatInput('');
-    const targetId = activeContact.id;
+      setIsSendingMessage(true);
+      const targetId = activeContact.id;
 
-    try {
-      let convId = activeContact.conversationId;
-      if (!convId) {
-        const startRes = await startConversation(activeContact.contactId);
-        convId = Number(startRes.data?.conversation_id || startRes.data?.id_percakapan || 0);
+      try {
+        let convId = activeContact.conversationId;
+        if (!convId) {
+          const startRes = await startConversation(activeContact.contactId);
+          convId = Number(startRes.data?.conversation_id || startRes.data?.id_percakapan || 0);
+        }
+        const sendRes = await sendMessageApi(convId, text);
+        const saved = mapBackendMessage(sendRes.data);
+        lastMessageIdRef.current = Math.max(lastMessageIdRef.current, saved.id);
+
+        setContacts((prev) =>
+          prev.map((c) => {
+            if (c.id !== targetId) return c;
+            const exists = c.messages.some((m) => m.id === saved.id);
+            return {
+              ...c,
+              conversationId: convId,
+              time: saved.time || c.time,
+              lastMessageText: saved.text,
+              lastMessageIsMine: true,
+              lastMessageTick: saved.tick,
+              messages: exists ? c.messages : [...c.messages, saved],
+            };
+          })
+        );
+        return true;
+      } catch (err) {
+        showToast(err.message || 'Gagal mengirim pesan');
+        return false;
+      } finally {
+        setIsSendingMessage(false);
       }
-      const sendRes = await sendMessageApi(convId, text);
-      const saved = mapBackendMessage(sendRes.data);
-      lastMessageIdRef.current = Math.max(lastMessageIdRef.current, saved.id);
-
-      setContacts((prev) =>
-        prev.map((c) => {
-          if (c.id !== targetId) return c;
-          const exists = c.messages.some((m) => m.id === saved.id);
-          return {
-            ...c,
-            conversationId: convId,
-            time: saved.time || c.time,
-            lastMessageText: saved.text,
-            lastMessageIsMine: true,
-            lastMessageTick: saved.tick,
-            messages: exists ? c.messages : [...c.messages, saved],
-          };
-        })
-      );
-    } catch (err) {
-      setChatInput(text);
-      showToast(err.message || 'Gagal mengirim pesan');
-    } finally {
-      setIsSendingMessage(false);
-    }
-  };
+    },
+    [activeContact, isSendingMessage, showToast]
+  );
 
   const openStory = async (storyId) => {
     const target = stories.find((s) => s.id === storyId);
@@ -898,7 +959,7 @@ export default function App() {
   };
 
   const filteredContacts = contacts.filter((c) => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = deferredSearchQuery.toLowerCase().trim();
     if (!q) return true;
     const lastFromMessages =
       Array.isArray(c.messages) && c.messages.length > 0
@@ -940,7 +1001,7 @@ export default function App() {
 
       {/* Incoming SMS Notification Banner */}
       {smsBanner.visible && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md rounded-2xl p-3.5 bg-white/85 dark:bg-slate-900/90 backdrop-blur-2xl border border-white/70 dark:border-white/15 shadow-2xl flex items-start gap-3">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md rounded-2xl p-3.5 bg-white/85 dark:bg-slate-900/90 backdrop-blur-md border border-white/70 dark:border-white/15 shadow-2xl flex items-start gap-3">
           <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-sm">
             <MessageSquare className="w-4 h-4" />
           </div>
@@ -1063,7 +1124,7 @@ export default function App() {
           </div>
 
           <div className="flex-1 w-full flex items-center justify-center p-4 overflow-y-auto no-scrollbar">
-            <div className="w-full max-w-[420px] rounded-[32px] p-6 sm:p-7 bg-white/22 dark:bg-black/38 backdrop-blur-xl border border-white/50 dark:border-white/15 shadow-2xl">
+            <div className="w-full max-w-[420px] rounded-[32px] p-6 sm:p-7 bg-white/24 dark:bg-black/38 backdrop-blur-sm border border-white/50 dark:border-white/15 shadow-2xl">
               {authStep === 'PHONE' && (
                 <div className="space-y-6">
                   <div>
@@ -1454,7 +1515,7 @@ export default function App() {
         <div className="relative z-10 w-full h-full max-w-[1440px] mx-auto p-0 md:p-3.5 lg:p-5 flex flex-col md:flex-row gap-0 md:gap-4 overflow-hidden">
           {/* Left Sidebar Pane (Chats / Status List) */}
           <aside
-            className={`relative w-full md:w-[350px] lg:w-[390px] xl:w-[410px] shrink-0 h-full flex flex-col md:rounded-[30px] bg-white/20 dark:bg-black/32 backdrop-blur-md border-b md:border border-white/45 dark:border-white/12 shadow-2xl overflow-hidden ${
+            className={`relative w-full md:w-[350px] lg:w-[390px] xl:w-[410px] shrink-0 h-full flex flex-col md:rounded-[30px] bg-white/16 dark:bg-black/24 border-b md:border border-white/45 dark:border-white/12 shadow-2xl overflow-hidden ${
               mobileRightView ? 'hidden md:flex' : 'flex'
             }`}
           >
@@ -1906,7 +1967,7 @@ export default function App() {
 
           {/* Right Workspace Pane (Chat Room / Status Composer / Status Privacy / Story Viewer) */}
           <main
-            className={`flex-1 h-full min-w-0 flex flex-col md:rounded-[30px] bg-white/14 dark:bg-black/24 backdrop-blur-sm md:border border-white/40 dark:border-white/12 shadow-2xl overflow-hidden relative ${
+            className={`flex-1 h-full min-w-0 flex flex-col md:rounded-[30px] bg-white/10 dark:bg-black/18 md:border border-white/40 dark:border-white/12 shadow-2xl overflow-hidden relative ${
               mobileRightView ? 'flex' : 'hidden md:flex'
             }`}
           >
@@ -2025,47 +2086,11 @@ export default function App() {
                     </div>
 
                     {/* Message Input Bar */}
-                    <form
-                      onSubmit={handleSendMessage}
-                      className="px-4 md:px-6 py-3 shrink-0 flex items-center gap-2.5"
-                    >
-                      <StageGlass
-                        stageRef={stageRef}
-                        wallpaper={wallpaper}
-                        isDark={isDark}
-                        variant="elevated"
-                        radius={999}
-                        className="flex-1"
-                        innerClassName="px-4 py-2.5 flex items-center"
-                      >
-                        <input
-                          id="chat-input-field"
-                          name="message"
-                          type="text"
-                          autoComplete="off"
-                          value={chatInput}
-                          onChange={(e) => setChatInput(e.target.value)}
-                          placeholder="Ketik pesan terenkripsi..."
-                          className="w-full bg-transparent text-[13px] text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
-                        />
-                      </StageGlass>
-
-                      <StageGlass
-                        as="button"
-                        type="submit"
-                        stageRef={stageRef}
-                        wallpaper={wallpaper}
-                        isDark={isDark}
-                        variant="emeraldOrb"
-                        radius={22}
-                        disabled={isSendingMessage}
-                        aria-label="Kirim pesan"
-                        className="w-11 h-11 shrink-0 cursor-pointer active:scale-95 transition-transform disabled:opacity-70"
-                        innerClassName="flex items-center justify-center text-white"
-                      >
-                        <Send className="w-4 h-4 -translate-x-px" />
-                      </StageGlass>
-                    </form>
+                    <ChatComposer
+                      isDark={isDark}
+                      isSending={isSendingMessage}
+                      onSendMessage={handleSendMessage}
+                    />
                   </div>
                 ) : (
                   <div className="flex-1 flex items-center justify-center p-6">
@@ -2148,7 +2173,7 @@ export default function App() {
                       className="w-full bg-transparent text-center text-xl md:text-2xl font-semibold leading-relaxed text-white placeholder-white/60 focus:outline-none resize-none"
                     />
                   ) : (
-                    <div className="rounded-[28px] bg-white/15 backdrop-blur-2xl border border-white/30 p-5 text-center space-y-3 shadow-xl">
+                    <div className="rounded-[28px] bg-white/15 backdrop-blur-md border border-white/30 p-5 text-center space-y-3 shadow-xl">
                       <input
                         ref={statusMediaFileRef}
                         type="file"

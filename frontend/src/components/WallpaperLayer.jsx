@@ -71,6 +71,7 @@ export const WallpaperLayer = ({ wallpaper, isDark }) => (
   <div
     id="wallpaper-layer"
     aria-hidden="true"
+    style={{ contain: 'strict', transform: 'translateZ(0)' }}
     className="absolute inset-0 z-0 overflow-hidden pointer-events-none"
   >
     <WallpaperContent wallpaper={wallpaper} isDark={isDark} />
