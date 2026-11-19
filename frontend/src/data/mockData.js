@@ -61,28 +61,6 @@ export const DEMO_ACCOUNTS = [
   { id_pengguna: 6, no_telepon: '081234567806', nama_profil: 'Muhammad Rifa', foto_profil: null },
 ];
 
-export const SCREEN_META = {
-  'UI-001': 'UI-001 · Input Nomor Telepon (SKPL-F-001)',
-  'UI-002': 'UI-002 · Verifikasi OTP (SKPL-F-001)',
-  'UI-008': 'UI-008 · Isi Nama Profil (SKPL-F-001)',
-  'UI-003': 'UI-003 · Daftar Chat (SKPL-F-002)',
-  'UI-004': 'UI-004 · Ruang Chat E2EE (SKPL-F-002)',
-  'UI-005': 'UI-005 · Daftar Status 24 Jam (SKPL-F-003)',
-  'UI-006': 'UI-006 · Buat Status (SKPL-F-003)',
-  'UI-007': 'UI-007 · Privasi Status (SKPL-F-003)',
-};
-
-export const SCREEN_NAV_ITEMS = [
-  { id: 'UI-001', label: 'UI-001 · Nomor' },
-  { id: 'UI-002', label: 'UI-002 · OTP' },
-  { id: 'UI-008', label: 'UI-008 · Profil' },
-  { id: 'UI-003', label: 'UI-003 · Daftar Chat' },
-  { id: 'UI-004', label: 'UI-004 · Ruang Chat' },
-  { id: 'UI-005', label: 'UI-005 · Status' },
-  { id: 'UI-006', label: 'UI-006 · Buat Status' },
-  { id: 'UI-007', label: 'UI-007 · Privasi' },
-];
-
 export const STATUS_BACKGROUNDS = [
   { name: 'Emerald Forest', hex: '#075e54', class: 'from-emerald-700 via-teal-800 to-emerald-950' },
   { name: 'Teal Meadow', hex: '#128c7e', class: 'from-teal-600 via-emerald-700 to-cyan-900' },

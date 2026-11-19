@@ -16,7 +16,7 @@ $appJsVersion  = @filemtime($appJsPath) ?: time();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>WhatsApp PPPL — Liquid Glass UI (@samasante/liquid-glass)</title>
+    <title>WhatsApp</title>
     <link
         rel="icon"
         type="image/svg+xml"

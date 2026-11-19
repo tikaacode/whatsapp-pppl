@@ -141,7 +141,10 @@ export const StageGlass = ({
 
   useLayoutEffect(() => {
     const el = boxRef.current;
-    const stage = stageRef?.current || el?.closest('.device-shell');
+    const stage =
+      stageRef?.current ||
+      el?.closest('[data-glass-stage]') ||
+      el?.closest('.device-shell');
     if (!el || !stage) return;
 
     const measure = () => {
@@ -171,9 +174,16 @@ export const StageGlass = ({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     ro.observe(stage);
+    const scrollParent = el.closest('[data-glass-scroll]');
+    if (scrollParent) {
+      scrollParent.addEventListener('scroll', measure, { passive: true });
+    }
     window.addEventListener('resize', measure);
     return () => {
       ro.disconnect();
+      if (scrollParent) {
+        scrollParent.removeEventListener('scroll', measure);
+      }
       window.removeEventListener('resize', measure);
     };
   }, [stageRef]);

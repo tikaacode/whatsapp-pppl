@@ -224,6 +224,16 @@ if (basename($_SERVER['PHP_SELF']) === 'auth.php') {
                     ]);
 
                     $newId = (int)$pdo->lastInsertId();
+
+                    // Otomatis tambahkan pengguna lain sebagai kontak awal pengguna baru
+                    $seedContacts = $pdo->prepare('
+                        INSERT IGNORE INTO tbl_kontak (id_pemilik, id_pengguna_kontak, nama_kontak, created_at)
+                        SELECT :owner_id, id_pengguna, nama_profil, NOW()
+                        FROM tbl_pengguna
+                        WHERE id_pengguna <> :self_id
+                    ');
+                    $seedContacts->execute([':owner_id' => $newId, ':self_id' => $newId]);
+
                     $stmt = $pdo->prepare('SELECT * FROM tbl_pengguna WHERE id_pengguna = :id LIMIT 1');
                     $stmt->execute([':id' => $newId]);
                     $user = $stmt->fetch(PDO::FETCH_ASSOC);
