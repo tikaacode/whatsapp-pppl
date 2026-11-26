@@ -1,709 +1,617 @@
 <?php
 /**
  * ==============================================================================
- * WhatsApp PPPL - Modul API Status 24 Jam & Privasi Audiens
+ * WhatsNew (PPPL) - Modul API Status 24 Jam & Privasi Audiens
  * ==============================================================================
- * 
+ *
  * Pengembang : Raihandy Wijaya (NIM: 10241064)
  * Peran      : Backend Developer (Status 24 Jam & Privacy API Specialist - Urutan 4)
- * Proyek     : WhatsApp PPPL (Praktikum Pengembangan Perangkat Lunak)
  * File Target: api/status.php
- * 
- * Deskripsi:
- * Menangani fungsionalitas status cerita (stories) 24 jam dengan:
- * 1. Proteksi sesi login aktif ($_SESSION['user_id']).
- * 2. Pembuatan status teks/media dengan masa kedaluwarsa otomatis 24 jam (expired_at = NOW() + 24 Jam).
- * 3. Pengaturan privasi selektif:
- *    - 'semua_kontak'     : Semua kontak yang saling terhubung dapat melihat.
- *    - 'kecuali_beberapa' : Semua kontak kecuali ID kontak yang tercatat di tbl_status_audiens.
- *    - 'hanya_terpilih'   : Hanya ID kontak yang tercatat di tbl_status_audiens yang dapat melihat.
- * 4. Pengambilan feed status aktif (expired_at > NOW()) yang dipisahkan menjadi:
- *    - my_status       : Status milik pengguna aktif beserta jumlah & daftar penonton.
- *    - recent_updates  : Status teman yang belum ditonton.
- *    - viewed_updates  : Status teman yang sudah pernah dibuka.
- * 5. Penandaan status telah dilihat (viewed) dengan pencegahan duplikasi (INSERT IGNORE).
- * 6. Penghapusan status aktif oleh pemiliknya (delete status).
- * ==============================================================================
+ *
+ * Endpoint:
+ *   POST api/status.php?action=create    -> buat status teks/media aktif 24 jam
+ *   GET  api/status.php?action=feed      -> ambil my_status, recent_updates, viewed_updates
+ *   POST api/status.php?action=view      -> tandai status dilihat (tervalidasi privasi)
+ *   GET  api/status.php?action=viewers   -> daftar penonton untuk status milik sendiri
+ *   POST api/status.php?action=delete    -> hapus status & file media milik sendiri
+ *   GET  api/status.php?action=contacts  -> daftar kontak untuk seleksi privasi
  */
 
-// 1. Header Wajib Respons JSON
-header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/messages.php';
 
-// 2. Inisialisasi Sesi PHP jika belum aktif
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-// 3. Hubungkan ke Konfigurasi Database (PDO)
-$configFile = __DIR__ . '/../config/database.local.php';
-if (file_exists($configFile)) {
-    require_once $configFile;
-} else {
-    require_once __DIR__ . '/../config/database.example.php';
-}
-
-// ------------------------------------------------------------------------------
-// 4. PROTEKSI SESI LOGIN (BAGIAN 4.1 SPESIFIKASI)
-// ------------------------------------------------------------------------------
-$userId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
-
-// Fallback untuk kemudahan testing jika parameter simulasi disertakan dan sesi kosong
-if (!$userId && isset($_REQUEST['simulate_user_id']) && is_numeric($_REQUEST['simulate_user_id'])) {
-    $userId = (int)$_REQUEST['simulate_user_id'];
-    $_SESSION['user_id'] = $userId;
-}
-
-if (!$userId) {
-    http_response_code(401);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Autentikasi diperlukan.'
-    ], JSON_UNESCAPED_UNICODE);
-    exit;
-}
-
-// ------------------------------------------------------------------------------
-// 5. HELPER FORMAT WAKTU RELATIF
-// ------------------------------------------------------------------------------
 /**
- * Mengubah timestamp MySQL menjadi format waktu relatif bahasa Indonesia
- * Contoh: "Baru saja", "15 menit lalu", "2 jam lalu", "Kemarin"
- * 
- * @param string $datetime
- * @return string
+ * Validasi apakah $viewerId berhak melihat status milik $ownerId sesuai relasi kontak & privasi.
  */
-function formatTimeAgo(string $datetime): string
+function waCanUserViewStatus(PDO $pdo, int $statusId, int $ownerId, string $privasi, int $viewerId): bool
 {
-    $time = strtotime($datetime);
-    $diff = time() - $time;
+    if ($ownerId === $viewerId) {
+        return true;
+    }
 
-    if ($diff < 60) {
-        return 'Baru saja';
-    } elseif ($diff < 3600) {
-        $minutes = floor($diff / 60);
-        return $minutes . ' menit lalu';
-    } elseif ($diff < 86400) {
-        $hours = floor($diff / 3600);
-        return $hours . ' jam lalu';
-    } elseif ($diff < 172800) {
-        return 'Kemarin pukul ' . date('H:i', $time);
-    } else {
-        return date('d/m/Y H:i', $time);
+    // Harus memiliki relasi kontak minimal satu arah
+    $stmtContact = $pdo->prepare('
+        SELECT 1 FROM tbl_kontak
+        WHERE (id_pemilik = :o1 AND id_pengguna_kontak = :v1)
+           OR (id_pemilik = :v2 AND id_pengguna_kontak = :o2)
+        LIMIT 1
+    ');
+    $stmtContact->execute([
+        ':o1' => $ownerId,
+        ':v1' => $viewerId,
+        ':v2' => $viewerId,
+        ':o2' => $ownerId,
+    ]);
+    if (!$stmtContact->fetchColumn()) {
+        return false;
+    }
+
+    if ($privasi === 'semua_kontak') {
+        return true;
+    }
+
+    $stmtAud = $pdo->prepare('
+        SELECT 1 FROM tbl_status_audiens
+        WHERE id_status = :sid AND id_pengguna = :vid
+        LIMIT 1
+    ');
+    $stmtAud->execute([':sid' => $statusId, ':vid' => $viewerId]);
+    $inAudience = (bool)$stmtAud->fetchColumn();
+
+    if ($privasi === 'kecuali_beberapa') {
+        return !$inAudience;
+    }
+    if ($privasi === 'hanya_terpilih') {
+        return $inAudience;
+    }
+
+    return false;
+}
+
+/**
+ * Hapus file fisik status media secara aman (hanya jika berada dalam folder uploads/status).
+ */
+function waDeleteStatusMediaFile(?string $relativePath): void
+{
+    if (!$relativePath) {
+        return;
+    }
+    $baseDir = realpath(__DIR__ . '/../uploads/status');
+    if ($baseDir === false) {
+        return;
+    }
+    $targetPath = realpath(__DIR__ . '/../' . ltrim($relativePath, '/\\'));
+    if ($targetPath !== false && str_starts_with($targetPath, $baseDir . DIRECTORY_SEPARATOR) && is_file($targetPath)) {
+        @unlink($targetPath);
     }
 }
 
-// ------------------------------------------------------------------------------
-// 6. PENANGANAN INPUT REQUEST (GET, POST x-www-form-urlencoded, dan JSON)
-// ------------------------------------------------------------------------------
-$rawInput = file_get_contents('php://input');
-$jsonInput = json_decode($rawInput, true) ?? [];
-$input = array_merge($_GET, $_POST, $jsonInput);
+if (basename($_SERVER['PHP_SELF'] ?? '') === 'status.php') {
+    header('Content-Type: application/json; charset=utf-8');
 
-$action = $input['action'] ?? 'feed';
+    $userId = requireAuth();
+    $input  = array_merge($_GET, $_POST, waGetJsonInput());
+    $action = (string)($input['action'] ?? 'feed');
 
-try {
-    $pdo = getDbConnection();
+    $pdo = null;
 
-    switch ($action) {
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: create (POST api/status.php?action=create)
-         * Spesifikasi 4.2: Buat Status Baru dengan masa aktif 24 jam & privasi
-         * ----------------------------------------------------------------------
-         */
-        case 'create':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST' && empty($jsonInput)) {
-                http_response_code(405);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Metode HTTP tidak diizinkan. Gunakan POST untuk membuat status.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
+    try {
+        $pdo = waGetDb();
 
-            // Ekstraksi parameter input
-            $jenisStatus = trim($input['jenis_status'] ?? 'teks');
-            if (!in_array($jenisStatus, ['teks', 'media'], true)) {
-                $jenisStatus = 'teks';
-            }
+        switch ($action) {
+            /**
+             * POST api/status.php?action=create
+             */
+            case 'create':
+                requirePostMethod('Metode HTTP tidak diizinkan. Gunakan POST untuk membuat status.');
 
-            // Teks isi status
-            $isiStatus = trim($input['isi_status'] ?? $input['isi_terenkripsi'] ?? $input['isi'] ?? '');
+                $jenisStatus = trim((string)($input['jenis_status'] ?? 'teks'));
+                if (!in_array($jenisStatus, ['teks', 'media'], true)) {
+                    $jenisStatus = 'teks';
+                }
 
-            // Warna latar (default #075e54)
-            $warnaLatar = trim($input['warna_latar'] ?? '#075e54');
-            if (empty($warnaLatar) || !preg_match('/^#[0-9a-fA-F]{6}$/', $warnaLatar)) {
-                $warnaLatar = '#075e54';
-            }
+                $isiStatus = trim((string)($input['isi_status'] ?? $input['isi_terenkripsi'] ?? $input['isi'] ?? ''));
+                if (mb_strlen($isiStatus) > 1000) {
+                    waJsonResponse(['success' => false, 'message' => 'Teks status terlalu panjang (maksimal 1000 karakter).'], 400);
+                }
 
-            // Path media jika status media
-            $pathMedia = trim($input['path_media'] ?? '');
+                $warnaLatar = trim((string)($input['warna_latar'] ?? '#075e54'));
+                if ($warnaLatar === '' || !preg_match('/^#[0-9a-fA-F]{6}$/', $warnaLatar)) {
+                    $warnaLatar = '#075e54';
+                }
 
-            // Penanganan upload file media jika ada multipart/form-data
-            if (isset($_FILES['media_file']) && $_FILES['media_file']['error'] === UPLOAD_ERR_OK) {
-                $fileTmp = $_FILES['media_file']['tmp_name'];
-                $fileName = basename($_FILES['media_file']['name']);
-                $ext = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
-                $allowedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+                // Path media hanya berasal dari file upload tervalidasi (tidak menerima path arbitrary dari input user)
+                $pathMedia = '';
+                if (isset($_FILES['media_file']) && $_FILES['media_file']['error'] !== UPLOAD_ERR_NO_FILE) {
+                    $uploadErr = (int)$_FILES['media_file']['error'];
+                    if ($uploadErr !== UPLOAD_ERR_OK) {
+                        waJsonResponse(['success' => false, 'message' => 'Gagal mengunggah file media.'], 400);
+                    }
 
-                if (in_array($ext, $allowedExts, true)) {
+                    $maxBytes = 5 * 1024 * 1024; // 5 MB
+                    if ((int)$_FILES['media_file']['size'] > $maxBytes) {
+                        waJsonResponse(['success' => false, 'message' => 'Ukuran file gambar maksimal 5 MB.'], 400);
+                    }
+
+                    $fileTmp = $_FILES['media_file']['tmp_name'];
+                    $finfo = new finfo(FILEINFO_MIME_TYPE);
+                    $mime = $finfo->file($fileTmp) ?: '';
+                    $mimeToExt = [
+                        'image/jpeg' => 'jpg',
+                        'image/png'  => 'png',
+                        'image/webp' => 'webp',
+                        'image/gif'  => 'gif',
+                    ];
+
+                    if (!isset($mimeToExt[$mime]) || @getimagesize($fileTmp) === false) {
+                        waJsonResponse(['success' => false, 'message' => 'Format file tidak didukung. Unggah gambar JPG, PNG, WEBP, atau GIF.'], 400);
+                    }
+
                     $uploadDir = __DIR__ . '/../uploads/status/';
                     if (!is_dir($uploadDir)) {
-                        mkdir($uploadDir, 0777, true);
+                        mkdir($uploadDir, 0755, true);
                     }
+
+                    $ext = $mimeToExt[$mime];
                     $uniqueName = 'status_' . $userId . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
                     $targetPath = $uploadDir . $uniqueName;
-                    if (move_uploaded_file($fileTmp, $targetPath)) {
-                        $pathMedia = 'uploads/status/' . $uniqueName;
-                        $jenisStatus = 'media';
+
+                    if (!move_uploaded_file($fileTmp, $targetPath)) {
+                        waJsonResponse(['success' => false, 'message' => 'Gagal menyimpan file gambar di server.'], 500);
                     }
+
+                    $pathMedia = 'uploads/status/' . $uniqueName;
+                    $jenisStatus = 'media';
                 }
-            }
 
-            // Validasi kelengkapan data
-            if ($jenisStatus === 'teks' && $isiStatus === '') {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Isi teks status tidak boleh kosong.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
+                if ($jenisStatus === 'teks' && $isiStatus === '') {
+                    waJsonResponse(['success' => false, 'message' => 'Isi teks status tidak boleh kosong.'], 400);
+                }
+                if ($jenisStatus === 'media' && $pathMedia === '' && $isiStatus === '') {
+                    waJsonResponse(['success' => false, 'message' => 'Status gambar memerlukan file gambar atau keterangan.'], 400);
+                }
 
-            if ($jenisStatus === 'media' && empty($pathMedia) && empty($isiStatus)) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Status gambar memerlukan file gambar atau keterangan.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
+                $privasi = trim((string)($input['privasi'] ?? 'semua_kontak'));
+                if (!in_array($privasi, ['semua_kontak', 'kecuali_beberapa', 'hanya_terpilih'], true)) {
+                    $privasi = 'semua_kontak';
+                }
 
-            // Pengaturan privasi
-            $privasi = trim($input['privasi'] ?? 'semua_kontak');
-            $allowedPrivacy = ['semua_kontak', 'kecuali_beberapa', 'hanya_terpilih'];
-            if (!in_array($privasi, $allowedPrivacy, true)) {
-                $privasi = 'semua_kontak';
-            }
+                $audiensRaw = $input['audiens_ids'] ?? $input['audiens'] ?? [];
+                if (is_string($audiensRaw)) {
+                    $audiensRaw = explode(',', $audiensRaw);
+                }
 
-            // ID audiens (kontak terpilih / kontak dikecualikan)
-            $audiensRaw = $input['audiens_ids'] ?? $input['audiens'] ?? [];
-            $audiensIds = [];
-
-            if (is_string($audiensRaw)) {
-                $audiensRaw = explode(',', $audiensRaw);
-            }
-
-            if (is_array($audiensRaw)) {
-                foreach ($audiensRaw as $item) {
-                    $item = trim((string)$item);
-                    if (is_numeric($item) && (int)$item > 0) {
-                        $audiensIds[] = (int)$item;
-                    } elseif (!empty($item)) {
-                        // Jika frontend mengirim nama kontak (misal 'Budi Santoso'), cocokkan ID-nya
-                        $stmtFind = $pdo->prepare('
-                            SELECT id_pengguna FROM tbl_pengguna WHERE nama_profil = :nama LIMIT 1
-                        ');
-                        $stmtFind->execute([':nama' => $item]);
-                        $foundId = $stmtFind->fetchColumn();
-                        if ($foundId) {
-                            $audiensIds[] = (int)$foundId;
+                $audiensIds = [];
+                if (is_array($audiensRaw)) {
+                    $stmtFind = $pdo->prepare('SELECT id_pengguna FROM tbl_pengguna WHERE nama_profil = :nama LIMIT 1');
+                    foreach ($audiensRaw as $item) {
+                        $item = trim((string)$item);
+                        if (is_numeric($item) && (int)$item > 0) {
+                            $audiensIds[] = (int)$item;
+                        } elseif ($item !== '') {
+                            $stmtFind->execute([':nama' => $item]);
+                            $foundId = $stmtFind->fetchColumn();
+                            if ($foundId) {
+                                $audiensIds[] = (int)$foundId;
+                            }
                         }
                     }
                 }
-            }
-            $audiensIds = array_unique(array_filter($audiensIds, fn($id) => $id !== $userId));
+                $audiensIds = array_values(array_unique(array_filter($audiensIds, fn($id) => $id !== $userId)));
 
-            // Transaksi Database untuk memastikan integritas tbl_status & tbl_status_audiens
-            $pdo->beginTransaction();
+                $encryptedContent = $isiStatus !== '' ? waEncryptMessage($isiStatus) : '';
 
-            // INSERT status dengan perhitungan otomatis kedaluwarsa 24 jam (NOW() + INTERVAL 24 HOUR)
-            $stmtInsert = $pdo->prepare('
-                INSERT INTO tbl_status (
-                    id_pengguna, jenis_status, isi_terenkripsi, path_media, privasi, warna_latar, created_at, expired_at
-                ) VALUES (
-                    :id_pengguna, :jenis, :isi, :path_media, :privasi, :warna, NOW(), NOW() + INTERVAL 24 HOUR
-                )
-            ');
+                $pdo->beginTransaction();
 
-            $stmtInsert->execute([
-                ':id_pengguna' => $userId,
-                ':jenis'       => $jenisStatus,
-                ':isi'         => $isiStatus,
-                ':path_media'  => !empty($pathMedia) ? $pathMedia : null,
-                ':privasi'     => $privasi,
-                ':warna'       => ($jenisStatus === 'teks') ? $warnaLatar : null,
-            ]);
-
-            $statusId = (int)$pdo->lastInsertId();
-
-            // Jika privasi selektif, simpan daftar ID kontak ke tbl_status_audiens
-            if (in_array($privasi, ['kecuali_beberapa', 'hanya_terpilih'], true) && !empty($audiensIds)) {
-                $stmtAudience = $pdo->prepare('
-                    INSERT IGNORE INTO tbl_status_audiens (id_status, id_pengguna)
-                    VALUES (:id_status, :id_pengguna)
+                $stmtInsert = $pdo->prepare('
+                    INSERT INTO tbl_status (
+                        id_pengguna, jenis_status, isi_terenkripsi, path_media, privasi, warna_latar, created_at, expired_at
+                    ) VALUES (
+                        :id_pengguna, :jenis, :isi, :path_media, :privasi, :warna, NOW(), NOW() + INTERVAL 24 HOUR
+                    )
                 ');
-                foreach ($audiensIds as $audId) {
-                    $stmtAudience->execute([
-                        ':id_status'   => $statusId,
-                        ':id_pengguna' => $audId
+                $stmtInsert->bindValue(':id_pengguna', $userId, PDO::PARAM_INT);
+                $stmtInsert->bindValue(':jenis', $jenisStatus, PDO::PARAM_STR);
+                $stmtInsert->bindValue(':isi', $encryptedContent, PDO::PARAM_LOB);
+                $stmtInsert->bindValue(':path_media', $pathMedia !== '' ? $pathMedia : null, $pathMedia !== '' ? PDO::PARAM_STR : PDO::PARAM_NULL);
+                $stmtInsert->bindValue(':privasi', $privasi, PDO::PARAM_STR);
+                $stmtInsert->bindValue(':warna', $jenisStatus === 'teks' ? $warnaLatar : null, $jenisStatus === 'teks' ? PDO::PARAM_STR : PDO::PARAM_NULL);
+                $stmtInsert->execute();
+
+                $statusId = (int)$pdo->lastInsertId();
+
+                if (in_array($privasi, ['kecuali_beberapa', 'hanya_terpilih'], true) && !empty($audiensIds)) {
+                    $stmtAudience = $pdo->prepare('
+                        INSERT IGNORE INTO tbl_status_audiens (id_status, id_pengguna)
+                        VALUES (:id_status, :id_pengguna)
+                    ');
+                    foreach ($audiensIds as $audId) {
+                        $stmtAudience->execute([
+                            ':id_status'   => $statusId,
+                            ':id_pengguna' => $audId,
+                        ]);
+                    }
+                }
+
+                $pdo->commit();
+                touchUserLastSeen($pdo, $userId);
+
+                $stmtGet = $pdo->prepare('
+                    SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi, s.path_media,
+                           s.privasi, s.warna_latar, s.created_at, s.expired_at,
+                           p.nama_profil, p.foto_profil
+                    FROM tbl_status s
+                    JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
+                    WHERE s.id_status = :id
+                    LIMIT 1
+                ');
+                $stmtGet->execute([':id' => $statusId]);
+                $newStatus = $stmtGet->fetch(PDO::FETCH_ASSOC);
+
+                waJsonResponse([
+                    'success' => true,
+                    'message' => 'Status berhasil dibuat dan aktif selama 24 jam.',
+                    'data'    => [
+                        'id_status'     => (int)$newStatus['id_status'],
+                        'id_pengguna'   => (int)$newStatus['id_pengguna'],
+                        'nama_pengguna' => $newStatus['nama_profil'],
+                        'foto_profil'   => $newStatus['foto_profil'],
+                        'jenis_status'  => $newStatus['jenis_status'],
+                        'isi_status'    => waDecryptMessage($newStatus['isi_terenkripsi']),
+                        'path_media'    => $newStatus['path_media'],
+                        'warna_latar'   => $newStatus['warna_latar'],
+                        'privasi'       => $newStatus['privasi'],
+                        'audiens_count' => count($audiensIds),
+                        'created_at'    => $newStatus['created_at'],
+                        'expired_at'    => $newStatus['expired_at'],
+                        'time_ago'      => waFormatTimeAgo($newStatus['created_at']),
+                    ],
+                ], 201);
+                break;
+
+            /**
+             * GET api/status.php?action=feed
+             */
+            case 'feed':
+                // 1. Ambil status aktif milik pengguna aktif
+                $stmtMyStatus = $pdo->prepare('
+                    SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi,
+                           s.path_media, s.privasi, s.warna_latar, s.created_at, s.expired_at,
+                           p.nama_profil, p.foto_profil
+                    FROM tbl_status s
+                    JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
+                    WHERE s.id_pengguna = :user_id
+                      AND s.expired_at > NOW()
+                    ORDER BY s.created_at DESC
+                ');
+                $stmtMyStatus->execute([':user_id' => $userId]);
+                $myStatusRows = $stmtMyStatus->fetchAll(PDO::FETCH_ASSOC);
+
+                // Batch fetch semua penonton untuk my_status dalam 1 query (menghindari N+1)
+                $viewersByStatus = [];
+                if (!empty($myStatusRows)) {
+                    $myIds = array_map(fn($r) => (int)$r['id_status'], $myStatusRows);
+                    $placeholders = implode(',', array_fill(0, count($myIds), '?'));
+                    $stmtViewers = $pdo->prepare("
+                        SELECT v.id_status, v.dilihat_at, p.id_pengguna, p.nama_profil, p.foto_profil
+                        FROM tbl_status_dilihat v
+                        JOIN tbl_pengguna p ON p.id_pengguna = v.id_penonton
+                        WHERE v.id_status IN ($placeholders)
+                          AND v.id_penonton <> ?
+                        ORDER BY v.dilihat_at DESC
+                    ");
+                    $stmtViewers->execute([...$myIds, $userId]);
+                    foreach ($stmtViewers->fetchAll(PDO::FETCH_ASSOC) as $vw) {
+                        $sid = (int)$vw['id_status'];
+                        $viewersByStatus[$sid][] = [
+                            'id_pengguna' => (int)$vw['id_pengguna'],
+                            'nama_profil' => $vw['nama_profil'],
+                            'foto_profil' => $vw['foto_profil'],
+                            'dilihat_at'  => $vw['dilihat_at'],
+                            'time_ago'    => waFormatTimeAgo($vw['dilihat_at']),
+                        ];
+                    }
+                }
+
+                $myStatus = [];
+                foreach ($myStatusRows as $row) {
+                    $sid = (int)$row['id_status'];
+                    $vList = $viewersByStatus[$sid] ?? [];
+                    $myStatus[] = [
+                        'id_status'     => $sid,
+                        'id_pengguna'   => (int)$row['id_pengguna'],
+                        'nama_pengguna' => $row['nama_profil'],
+                        'foto_profil'   => $row['foto_profil'],
+                        'jenis_status'  => $row['jenis_status'],
+                        'isi_status'    => waDecryptMessage($row['isi_terenkripsi']),
+                        'path_media'    => $row['path_media'],
+                        'warna_latar'   => $row['warna_latar'],
+                        'privasi'       => $row['privasi'],
+                        'created_at'    => $row['created_at'],
+                        'expired_at'    => $row['expired_at'],
+                        'time_ago'      => waFormatTimeAgo($row['created_at']),
+                        'viewers_count' => count($vList),
+                        'viewers'       => $vList,
+                    ];
+                }
+
+                // 2. Ambil status aktif teman sesuai relasi kontak & filter privasi (single-quoted SQL literals)
+                $queryFriendsStatus = "
+                    SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi,
+                           s.path_media, s.privasi, s.warna_latar, s.created_at, s.expired_at,
+                           p.nama_profil, p.foto_profil,
+                           k.nama_kontak,
+                           d.id_status_dilihat,
+                           d.dilihat_at
+                    FROM tbl_status s
+                    JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
+                    LEFT JOIN tbl_kontak k
+                        ON (k.id_pemilik = :user_id_k AND k.id_pengguna_kontak = s.id_pengguna)
+                    LEFT JOIN tbl_status_dilihat d
+                        ON (d.id_status = s.id_status AND d.id_penonton = :user_id_d)
+                    WHERE s.id_pengguna <> :user_id_self
+                      AND s.expired_at > NOW()
+                      AND (
+                          EXISTS (
+                              SELECT 1 FROM tbl_kontak c1
+                              WHERE c1.id_pemilik = s.id_pengguna AND c1.id_pengguna_kontak = :user_id_c1
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM tbl_kontak c2
+                              WHERE c2.id_pemilik = :user_id_c2 AND c2.id_pengguna_kontak = s.id_pengguna
+                          )
+                      )
+                      AND (
+                          s.privasi = 'semua_kontak'
+                          OR (
+                              s.privasi = 'kecuali_beberapa'
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM tbl_status_audiens sa1
+                                  WHERE sa1.id_status = s.id_status AND sa1.id_pengguna = :user_id_sa1
+                              )
+                          )
+                          OR (
+                              s.privasi = 'hanya_terpilih'
+                              AND EXISTS (
+                                  SELECT 1 FROM tbl_status_audiens sa2
+                                  WHERE sa2.id_status = s.id_status AND sa2.id_pengguna = :user_id_sa2
+                              )
+                          )
+                      )
+                    ORDER BY s.created_at DESC
+                ";
+
+                $stmtFriends = $pdo->prepare($queryFriendsStatus);
+                $stmtFriends->execute([
+                    ':user_id_k'    => $userId,
+                    ':user_id_d'    => $userId,
+                    ':user_id_self' => $userId,
+                    ':user_id_c1'   => $userId,
+                    ':user_id_c2'   => $userId,
+                    ':user_id_sa1'  => $userId,
+                    ':user_id_sa2'  => $userId,
+                ]);
+
+                $recentUpdates = [];
+                $viewedUpdates = [];
+
+                foreach ($stmtFriends->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $isViewed = !empty($row['id_status_dilihat']);
+                    $statusItem = [
+                        'id_status'     => (int)$row['id_status'],
+                        'id_pengguna'   => (int)$row['id_pengguna'],
+                        'nama_pengguna' => $row['nama_kontak'] ?: $row['nama_profil'],
+                        'nama_asli'     => $row['nama_profil'],
+                        'foto_profil'   => $row['foto_profil'],
+                        'jenis_status'  => $row['jenis_status'],
+                        'isi_status'    => waDecryptMessage($row['isi_terenkripsi']),
+                        'path_media'    => $row['path_media'],
+                        'warna_latar'   => $row['warna_latar'],
+                        'privasi'       => $row['privasi'],
+                        'created_at'    => $row['created_at'],
+                        'expired_at'    => $row['expired_at'],
+                        'time_ago'      => waFormatTimeAgo($row['created_at']),
+                        'sudah_dilihat' => $isViewed,
+                        'dilihat_at'    => $row['dilihat_at'],
+                    ];
+
+                    if ($isViewed) {
+                        $viewedUpdates[] = $statusItem;
+                    } else {
+                        $recentUpdates[] = $statusItem;
+                    }
+                }
+
+                waJsonResponse([
+                    'success' => true,
+                    'data'    => [
+                        'current_user_id' => $userId,
+                        'my_status'       => $myStatus,
+                        'recent_updates'  => $recentUpdates,
+                        'viewed_updates'  => $viewedUpdates,
+                    ],
+                ]);
+                break;
+
+            /**
+             * POST api/status.php?action=view
+             */
+            case 'view':
+                requirePostMethod('Gunakan metode POST untuk menandai status telah dilihat.');
+                $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
+
+                if ($statusId <= 0) {
+                    waJsonResponse(['success' => false, 'message' => 'Parameter status_id tidak valid.'], 400);
+                }
+
+                $stmtCheck = $pdo->prepare('
+                    SELECT id_status, id_pengguna, privasi, (expired_at <= NOW()) AS is_expired
+                    FROM tbl_status
+                    WHERE id_status = :id
+                    LIMIT 1
+                ');
+                $stmtCheck->execute([':id' => $statusId]);
+                $targetStatus = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+
+                if (!$targetStatus) {
+                    waJsonResponse(['success' => false, 'message' => 'Status tidak ditemukan.'], 404);
+                }
+                if ((int)$targetStatus['is_expired'] === 1) {
+                    waJsonResponse(['success' => false, 'message' => 'Status ini telah kedaluwarsa (lebih dari 24 jam).'], 410);
+                }
+
+                $ownerId = (int)$targetStatus['id_pengguna'];
+                if ($ownerId === $userId) {
+                    waJsonResponse([
+                        'success'   => true,
+                        'message'   => 'Status milik sendiri dibuka (tidak dicatat ke penonton).',
+                        'is_owner'  => true,
+                        'status_id' => $statusId,
                     ]);
                 }
-            }
 
-            $pdo->commit();
-
-            // Ambil data status yang baru dibuat untuk konfirmasi
-            $stmtGet = $pdo->prepare('
-                SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi, s.path_media,
-                       s.privasi, s.warna_latar, s.created_at, s.expired_at,
-                       p.nama_profil, p.foto_profil
-                FROM tbl_status s
-                JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
-                WHERE s.id_status = :id
-                LIMIT 1
-            ');
-            $stmtGet->execute([':id' => $statusId]);
-            $newStatus = $stmtGet->fetch(PDO::FETCH_ASSOC);
-
-            http_response_code(201);
-            echo json_encode([
-                'success' => true,
-                'message' => 'Status berhasil dibuat dan aktif selama 24 jam.',
-                'data'    => [
-                    'id_status'      => (int)$newStatus['id_status'],
-                    'id_pengguna'    => (int)$newStatus['id_pengguna'],
-                    'nama_pengguna'  => $newStatus['nama_profil'],
-                    'foto_profil'    => $newStatus['foto_profil'],
-                    'jenis_status'   => $newStatus['jenis_status'],
-                    'isi_status'     => (string)$newStatus['isi_terenkripsi'],
-                    'path_media'     => $newStatus['path_media'],
-                    'warna_latar'    => $newStatus['warna_latar'],
-                    'privasi'        => $newStatus['privasi'],
-                    'audiens_count'  => count($audiensIds),
-                    'created_at'     => $newStatus['created_at'],
-                    'expired_at'     => $newStatus['expired_at'],
-                    'time_ago'       => formatTimeAgo($newStatus['created_at'])
-                ]
-            ], JSON_UNESCAPED_UNICODE);
-            break;
-
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: feed (GET api/status.php?action=feed)
-         * Spesifikasi 4.3: Mengambil Status Aktif (< 24 Jam) Sesuai Filter Privasi
-         * Terbagi menjadi: my_status, recent_updates, viewed_updates
-         * ----------------------------------------------------------------------
-         */
-        case 'feed':
-            // 1. Ambil SEMUA Status Aktif Milik Pengguna yang Sedang Login (my_status)
-            $stmtMyStatus = $pdo->prepare('
-                SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi,
-                       s.path_media, s.privasi, s.warna_latar, s.created_at, s.expired_at,
-                       p.nama_profil, p.foto_profil,
-                       (SELECT COUNT(DISTINCT d.id_penonton) 
-                        FROM tbl_status_dilihat d 
-                        WHERE d.id_status = s.id_status AND d.id_penonton != :user_id1) AS viewers_count
-                FROM tbl_status s
-                JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
-                WHERE s.id_pengguna = :user_id2
-                  AND s.expired_at > NOW()
-                ORDER BY s.created_at DESC
-            ');
-            $stmtMyStatus->execute([
-                ':user_id1' => $userId,
-                ':user_id2' => $userId
-            ]);
-            $myStatusRows = $stmtMyStatus->fetchAll(PDO::FETCH_ASSOC);
-
-            // Format my_status dan sertakan daftar penontonnya
-            $myStatus = [];
-            foreach ($myStatusRows as $row) {
-                // Ambil daftar penonton untuk setiap status milik user aktif
-                $stmtViewers = $pdo->prepare('
-                    SELECT v.id_status_dilihat, v.dilihat_at, p.id_pengguna, p.nama_profil, p.foto_profil
-                    FROM tbl_status_dilihat v
-                    JOIN tbl_pengguna p ON p.id_pengguna = v.id_penonton
-                    WHERE v.id_status = :id_status AND v.id_penonton != :user_id
-                    ORDER BY v.dilihat_at DESC
-                ');
-                $stmtViewers->execute([
-                    ':id_status' => $row['id_status'],
-                    ':user_id'   => $userId
-                ]);
-                $viewersList = $stmtViewers->fetchAll(PDO::FETCH_ASSOC);
-
-                $formattedViewers = array_map(function ($vw) {
-                    return [
-                        'id_pengguna' => (int)$vw['id_pengguna'],
-                        'nama_profil' => $vw['nama_profil'],
-                        'foto_profil' => $vw['foto_profil'],
-                        'dilihat_at'  => $vw['dilihat_at'],
-                        'time_ago'    => formatTimeAgo($vw['dilihat_at'])
-                    ];
-                }, $viewersList);
-
-                $myStatus[] = [
-                    'id_status'      => (int)$row['id_status'],
-                    'id_pengguna'    => (int)$row['id_pengguna'],
-                    'nama_pengguna'  => $row['nama_profil'],
-                    'foto_profil'    => $row['foto_profil'],
-                    'jenis_status'   => $row['jenis_status'],
-                    'isi_status'     => (string)$row['isi_terenkripsi'],
-                    'path_media'     => $row['path_media'],
-                    'warna_latar'    => $row['warna_latar'],
-                    'privasi'        => $row['privasi'],
-                    'created_at'     => $row['created_at'],
-                    'expired_at'     => $row['expired_at'],
-                    'time_ago'       => formatTimeAgo($row['created_at']),
-                    'viewers_count'  => (int)$row['viewers_count'],
-                    'viewers'        => $formattedViewers
-                ];
-            }
-
-            // 2. Ambil Status Aktif Milik Teman dengan Filter Privasi & Relasi Kontak
-            // Logika Privasi:
-            // a. expired_at > NOW()
-            // b. s.id_pengguna != :user_id
-            // c. Teman menyimpan kontak user login ATAU user login menyimpan kontak teman
-            //    (relasi kontak di tbl_kontak)
-            // d. Privasi:
-            //    - 'semua_kontak': user login diizinkan melihat
-            //    - 'kecuali_beberapa': user login BUKAN audiens yang dikecualikan (NOT IN tbl_status_audiens)
-            //    - 'hanya_terpilih': user login TERDAFTAR sebagai audiens terpilih (IN tbl_status_audiens)
-            // e. LEFT JOIN tbl_status_dilihat untuk mendeteksi apakah sudah ditonton oleh user login
-            $queryFriendsStatus = '
-                SELECT s.id_status, s.id_pengguna, s.jenis_status, s.isi_terenkripsi,
-                       s.path_media, s.privasi, s.warna_latar, s.created_at, s.expired_at,
-                       p.nama_profil, p.foto_profil,
-                       k.nama_kontak,
-                       d.id_status_dilihat,
-                       d.dilihat_at
-                FROM tbl_status s
-                JOIN tbl_pengguna p ON p.id_pengguna = s.id_pengguna
-                -- Hubungkan dengan buku kontak user aktif jika ada nama kontak khusus
-                LEFT JOIN tbl_kontak k ON (k.id_pemilik = :user_id_k AND k.id_pengguna_kontak = s.id_pengguna)
-                -- Cek apakah status sudah pernah dilihat oleh user aktif
-                LEFT JOIN tbl_status_dilihat d ON (d.id_status = s.id_status AND d.id_penonton = :user_id_d)
-                WHERE s.id_pengguna != :user_id_self
-                  AND s.expired_at > NOW()
-                  -- Pembuat status harus terhubung kontak dengan user login
-                  AND (
-                      EXISTS (
-                          SELECT 1 FROM tbl_kontak c1
-                          WHERE c1.id_pemilik = s.id_pengguna AND c1.id_pengguna_kontak = :user_id_c1
-                      )
-                      OR EXISTS (
-                          SELECT 1 FROM tbl_kontak c2
-                          WHERE c2.id_pemilik = :user_id_c2 AND c2.id_pengguna_kontak = s.id_pengguna
-                      )
-                  )
-                  -- Filter aturan privasi pembuat status
-                  AND (
-                      s.privasi = "semua_kontak"
-                      OR (
-                          s.privasi = "kecuali_beberapa"
-                          AND NOT EXISTS (
-                              SELECT 1 FROM tbl_status_audiens sa1
-                              WHERE sa1.id_status = s.id_status AND sa1.id_pengguna = :user_id_sa1
-                          )
-                      )
-                      OR (
-                          s.privasi = "hanya_terpilih"
-                          AND EXISTS (
-                              SELECT 1 FROM tbl_status_audiens sa2
-                              WHERE sa2.id_status = s.id_status AND sa2.id_pengguna = :user_id_sa2
-                          )
-                      )
-                  )
-                ORDER BY s.created_at DESC
-            ';
-
-            $stmtFriends = $pdo->prepare($queryFriendsStatus);
-            $stmtFriends->execute([
-                ':user_id_k'    => $userId,
-                ':user_id_d'    => $userId,
-                ':user_id_self' => $userId,
-                ':user_id_c1'   => $userId,
-                ':user_id_c2'   => $userId,
-                ':user_id_sa1'  => $userId,
-                ':user_id_sa2'  => $userId
-            ]);
-            $friendsRows = $stmtFriends->fetchAll(PDO::FETCH_ASSOC);
-
-            $recentUpdates = [];
-            $viewedUpdates = [];
-
-            foreach ($friendsRows as $row) {
-                $isViewed = !empty($row['id_status_dilihat']);
-
-                $statusItem = [
-                    'id_status'      => (int)$row['id_status'],
-                    'id_pengguna'    => (int)$row['id_pengguna'],
-                    'nama_pengguna'  => $row['nama_kontak'] ?: $row['nama_profil'],
-                    'nama_asli'      => $row['nama_profil'],
-                    'foto_profil'    => $row['foto_profil'],
-                    'jenis_status'   => $row['jenis_status'],
-                    'isi_status'     => (string)$row['isi_terenkripsi'],
-                    'path_media'     => $row['path_media'],
-                    'warna_latar'    => $row['warna_latar'],
-                    'privasi'        => $row['privasi'],
-                    'created_at'     => $row['created_at'],
-                    'expired_at'     => $row['expired_at'],
-                    'time_ago'       => formatTimeAgo($row['created_at']),
-                    'sudah_dilihat'  => $isViewed,
-                    'dilihat_at'     => $row['dilihat_at']
-                ];
-
-                if ($isViewed) {
-                    $viewedUpdates[] = $statusItem;
-                } else {
-                    $recentUpdates[] = $statusItem;
+                if (!waCanUserViewStatus($pdo, $statusId, $ownerId, (string)$targetStatus['privasi'], $userId)) {
+                    waJsonResponse(['success' => false, 'message' => 'Anda tidak memiliki izin untuk melihat status ini.'], 403);
                 }
-            }
 
-            echo json_encode([
-                'success' => true,
-                'data'    => [
-                    'current_user_id' => $userId,
-                    'my_status'       => $myStatus,
-                    'recent_updates'  => $recentUpdates,
-                    'viewed_updates'  => $viewedUpdates
-                ]
-            ], JSON_UNESCAPED_UNICODE);
-            break;
-
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: view (POST api/status.php?action=view)
-         * Spesifikasi 4.4: Menandai Status Telah Dilihat oleh Pengguna
-         * ----------------------------------------------------------------------
-         */
-        case 'view':
-            $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
-
-            if ($statusId <= 0) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Parameter status_id tidak valid.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            // Periksa keberadaan status dan masa aktifnya
-            $stmtCheck = $pdo->prepare('
-                SELECT id_status, id_pengguna, expired_at 
-                FROM tbl_status 
-                WHERE id_status = :id 
-                LIMIT 1
-            ');
-            $stmtCheck->execute([':id' => $statusId]);
-            $targetStatus = $stmtCheck->fetch(PDO::FETCH_ASSOC);
-
-            if (!$targetStatus) {
-                http_response_code(404);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Status tidak ditemukan.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            // Cek apakah sudah kedaluwarsa (> 24 jam)
-            if (strtotime($targetStatus['expired_at']) <= time()) {
-                http_response_code(410);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Status ini telah kedaluwarsa (lebih dari 24 jam).'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            // Jika status milik sendiri, tidak perlu dicatat sebagai viewer
-            if ((int)$targetStatus['id_pengguna'] === $userId) {
-                echo json_encode([
-                    'success'   => true,
-                    'message'   => 'Status milik sendiri dibuka (tidak dicatat ke penonton).',
-                    'is_owner'  => true,
-                    'status_id' => $statusId
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            // Catat penonton ke tbl_status_dilihat menggunakan INSERT IGNORE untuk cegah duplikasi
-            $stmtView = $pdo->prepare('
-                INSERT IGNORE INTO tbl_status_dilihat (id_status, id_penonton, dilihat_at)
-                VALUES (:status_id, :user_id, NOW())
-            ');
-            $stmtView->execute([
-                ':status_id' => $statusId,
-                ':user_id'   => $userId
-            ]);
-
-            echo json_encode([
-                'success'   => true,
-                'message'   => 'Status berhasil ditandai telah dilihat.',
-                'is_owner'  => false,
-                'status_id' => $statusId
-            ], JSON_UNESCAPED_UNICODE);
-            break;
-
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: viewers (GET api/status.php?action=viewers&status_id=...)
-         * Melihat daftar penonton untuk status milik pengguna aktif
-         * ----------------------------------------------------------------------
-         */
-        case 'viewers':
-            $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
-
-            if ($statusId <= 0) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Parameter status_id tidak valid.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            // Pastikan status tersebut milik pengguna yang sedang login
-            $stmtOwner = $pdo->prepare('
-                SELECT id_status, id_pengguna FROM tbl_status WHERE id_status = :id LIMIT 1
-            ');
-            $stmtOwner->execute([':id' => $statusId]);
-            $ownerCheck = $stmtOwner->fetch(PDO::FETCH_ASSOC);
-
-            if (!$ownerCheck) {
-                http_response_code(404);
-                echo json_encode(['success' => false, 'message' => 'Status tidak ditemukan.']);
-                exit;
-            }
-
-            if ((int)$ownerCheck['id_pengguna'] !== $userId) {
-                http_response_code(403);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Anda hanya dapat melihat daftar penonton untuk status milik Anda sendiri.'
+                $stmtView = $pdo->prepare('
+                    INSERT IGNORE INTO tbl_status_dilihat (id_status, id_penonton, dilihat_at)
+                    VALUES (:status_id, :user_id, NOW())
+                ');
+                $stmtView->execute([
+                    ':status_id' => $statusId,
+                    ':user_id'   => $userId,
                 ]);
-                exit;
-            }
 
-            $stmtList = $pdo->prepare('
-                SELECT d.id_status_dilihat, d.dilihat_at, p.id_pengguna, p.nama_profil, p.foto_profil
-                FROM tbl_status_dilihat d
-                JOIN tbl_pengguna p ON p.id_pengguna = d.id_penonton
-                WHERE d.id_status = :id_status
-                ORDER BY d.dilihat_at DESC
-            ');
-            $stmtList->execute([':id_status' => $statusId]);
-            $viewers = $stmtList->fetchAll(PDO::FETCH_ASSOC);
+                waJsonResponse([
+                    'success'   => true,
+                    'message'   => 'Status berhasil ditandai telah dilihat.',
+                    'is_owner'  => false,
+                    'status_id' => $statusId,
+                ]);
+                break;
 
-            $formatted = array_map(function ($v) {
-                return [
+            /**
+             * GET api/status.php?action=viewers&status_id=...
+             */
+            case 'viewers':
+                $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
+
+                if ($statusId <= 0) {
+                    waJsonResponse(['success' => false, 'message' => 'Parameter status_id tidak valid.'], 400);
+                }
+
+                $stmtOwner = $pdo->prepare('SELECT id_status, id_pengguna FROM tbl_status WHERE id_status = :id LIMIT 1');
+                $stmtOwner->execute([':id' => $statusId]);
+                $ownerCheck = $stmtOwner->fetch(PDO::FETCH_ASSOC);
+
+                if (!$ownerCheck) {
+                    waJsonResponse(['success' => false, 'message' => 'Status tidak ditemukan.'], 404);
+                }
+                if ((int)$ownerCheck['id_pengguna'] !== $userId) {
+                    waJsonResponse(['success' => false, 'message' => 'Anda hanya dapat melihat daftar penonton untuk status milik Anda sendiri.'], 403);
+                }
+
+                $stmtList = $pdo->prepare('
+                    SELECT d.id_status_dilihat, d.dilihat_at, p.id_pengguna, p.nama_profil, p.foto_profil
+                    FROM tbl_status_dilihat d
+                    JOIN tbl_pengguna p ON p.id_pengguna = d.id_penonton
+                    WHERE d.id_status = :id_status AND d.id_penonton <> :owner_id
+                    ORDER BY d.dilihat_at DESC
+                ');
+                $stmtList->execute([':id_status' => $statusId, ':owner_id' => $userId]);
+
+                $formatted = array_map(fn($v) => [
                     'id_pengguna' => (int)$v['id_pengguna'],
                     'nama_profil' => $v['nama_profil'],
                     'foto_profil' => $v['foto_profil'],
                     'dilihat_at'  => $v['dilihat_at'],
-                    'time_ago'    => formatTimeAgo($v['dilihat_at'])
-                ];
-            }, $viewers);
+                    'time_ago'    => waFormatTimeAgo($v['dilihat_at']),
+                ], $stmtList->fetchAll(PDO::FETCH_ASSOC));
 
-            echo json_encode([
-                'success' => true,
-                'data'    => [
-                    'status_id'     => $statusId,
-                    'viewers_count' => count($formatted),
-                    'viewers'       => $formatted
-                ]
-            ], JSON_UNESCAPED_UNICODE);
-            break;
-
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: delete (POST api/status.php?action=delete)
-         * Menghapus status milik pengguna aktif
-         * ----------------------------------------------------------------------
-         */
-        case 'delete':
-            $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
-
-            if ($statusId <= 0) {
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Parameter status_id tidak valid.'
-                ], JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            $stmtDelete = $pdo->prepare('
-                DELETE FROM tbl_status 
-                WHERE id_status = :id AND id_pengguna = :user_id
-            ');
-            $stmtDelete->execute([
-                ':id'      => $statusId,
-                ':user_id' => $userId
-            ]);
-
-            if ($stmtDelete->rowCount() > 0) {
-                echo json_encode([
+                waJsonResponse([
                     'success' => true,
-                    'message' => 'Status berhasil dihapus.'
-                ], JSON_UNESCAPED_UNICODE);
-            } else {
-                http_response_code(404);
-                echo json_encode([
-                    'success' => false,
-                    'message' => 'Status tidak ditemukan atau Anda tidak memiliki akses untuk menghapusnya.'
-                ], JSON_UNESCAPED_UNICODE);
-            }
-            break;
+                    'data'    => [
+                        'status_id'     => $statusId,
+                        'viewers_count' => count($formatted),
+                        'viewers'       => $formatted,
+                    ],
+                ]);
+                break;
 
-        /**
-         * ----------------------------------------------------------------------
-         * ACTION: contacts (GET api/status.php?action=contacts)
-         * Daftar kontak pengguna aktif untuk modal seleksi audiens privasi status
-         * ----------------------------------------------------------------------
-         */
-        case 'contacts':
-            $stmtContacts = $pdo->prepare('
-                SELECT k.id_kontak, k.id_pengguna_kontak, k.nama_kontak,
-                       p.nama_profil, p.foto_profil, p.no_telepon
-                FROM tbl_kontak k
-                JOIN tbl_pengguna p ON p.id_pengguna = k.id_pengguna_kontak
-                WHERE k.id_pemilik = :user_id
-                ORDER BY k.nama_kontak ASC
-            ');
-            $stmtContacts->execute([':user_id' => $userId]);
-            $contacts = $stmtContacts->fetchAll(PDO::FETCH_ASSOC);
+            /**
+             * POST api/status.php?action=delete
+             */
+            case 'delete':
+                requirePostMethod('Gunakan metode POST untuk menghapus status.');
+                $statusId = isset($input['status_id']) ? (int)$input['status_id'] : (int)($input['id_status'] ?? 0);
 
-            echo json_encode([
-                'success' => true,
-                'data'    => $contacts
-            ], JSON_UNESCAPED_UNICODE);
-            break;
+                if ($statusId <= 0) {
+                    waJsonResponse(['success' => false, 'message' => 'Parameter status_id tidak valid.'], 400);
+                }
 
-        default:
-            http_response_code(400);
-            echo json_encode([
-                'success' => false,
-                'message' => 'Aksi status tidak dikenali: ' . htmlspecialchars($action)
-            ], JSON_UNESCAPED_UNICODE);
-            break;
+                // Ambil path_media dulu sebelum dihapus agar file fisik ikut dibersihkan
+                $stmtFindMedia = $pdo->prepare('
+                    SELECT path_media
+                    FROM tbl_status
+                    WHERE id_status = :id AND id_pengguna = :user_id
+                    LIMIT 1
+                ');
+                $stmtFindMedia->execute([':id' => $statusId, ':user_id' => $userId]);
+                $mediaRow = $stmtFindMedia->fetch(PDO::FETCH_ASSOC);
+
+                if (!$mediaRow) {
+                    waJsonResponse(['success' => false, 'message' => 'Status tidak ditemukan atau Anda tidak memiliki akses untuk menghapusnya.'], 404);
+                }
+
+                $stmtDelete = $pdo->prepare('
+                    DELETE FROM tbl_status
+                    WHERE id_status = :id AND id_pengguna = :user_id
+                ');
+                $stmtDelete->execute([':id' => $statusId, ':user_id' => $userId]);
+
+                if ($stmtDelete->rowCount() > 0) {
+                    waDeleteStatusMediaFile($mediaRow['path_media'] ?? null);
+                    waJsonResponse(['success' => true, 'message' => 'Status berhasil dihapus.']);
+                }
+
+                waJsonResponse(['success' => false, 'message' => 'Status tidak ditemukan.'], 404);
+                break;
+
+            /**
+             * GET api/status.php?action=contacts
+             */
+            case 'contacts':
+                $stmtContacts = $pdo->prepare('
+                    SELECT k.id_kontak, k.id_pengguna_kontak, k.nama_kontak,
+                           p.nama_profil, p.foto_profil, p.no_telepon
+                    FROM tbl_kontak k
+                    JOIN tbl_pengguna p ON p.id_pengguna = k.id_pengguna_kontak
+                    WHERE k.id_pemilik = :user_id
+                    ORDER BY k.nama_kontak ASC
+                ');
+                $stmtContacts->execute([':user_id' => $userId]);
+
+                waJsonResponse([
+                    'success' => true,
+                    'data'    => $stmtContacts->fetchAll(PDO::FETCH_ASSOC),
+                ]);
+                break;
+
+            default:
+                waJsonResponse(['success' => false, 'message' => 'Aksi status tidak dikenali.'], 400);
+        }
+    } catch (PDOException $e) {
+        if ($pdo instanceof PDO && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('[Status API DB Error] ' . $e->getMessage());
+        waJsonResponse(['success' => false, 'message' => 'Terjadi kendala pada basis data.'], 500);
+    } catch (Throwable $e) {
+        if ($pdo instanceof PDO && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('[Status API Error] ' . $e->getMessage());
+        waJsonResponse(['success' => false, 'message' => 'Terjadi kesalahan pada server.'], 500);
     }
-
-} catch (PDOException $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Terjadi kendala pada basis data: ' . $e->getMessage()
-    ], JSON_UNESCAPED_UNICODE);
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Terjadi kesalahan server: ' . $e->getMessage()
-    ], JSON_UNESCAPED_UNICODE);
+    exit;
 }
-

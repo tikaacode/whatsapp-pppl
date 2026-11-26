@@ -1,30 +1,27 @@
 <?php
 /**
- * WhatsApp PPPL - Modul Pesan (Messaging API) & Enkripsi
+ * WhatsNew (PPPL) - Modul Pesan (Messaging API) & Enkripsi
  * Penulis: Muhammad Zaldy Syah Firaz (NIM: 10241054)
  * Peran  : Backend Developer (Urutan 5 - Chat, Contacts & Messages API)
  *
  * Endpoint:
  *   GET  api/messages.php?conversation_id={id}                 -> riwayat pesan (didekripsi), tandai 'dibaca'
- *   GET  api/messages.php?conversation_id={id}&since_id={id}   -> polling pesan baru (id_pesan > since_id)
+ *   GET  api/messages.php?conversation_id={id}&since_id={id}   -> polling pesan baru + update read/delivered receipts
  *   POST api/messages.php?action=send                          -> kirim pesan (body JSON / form)
  *        body: { "conversation_id": 1, "message_text": "halo" }
  *
- * File ini juga berisi fungsi helper (enkripsi, format waktu, cek percakapan)
- * yang dipakai ulang oleh api/contacts.php.
+ * File ini juga berisi helper bersama (enkripsi terautentikasi, format waktu, cek percakapan)
+ * yang dipakai ulang oleh api/contacts.php dan api/status.php.
  */
 
-require_once __DIR__ . '/auth.php'; // session, koneksi DB (getDbConnection), requireAuth()
+require_once __DIR__ . '/auth.php';
 
 // ------------------------------------------------------------------------------
-// HELPER: ENKRIPSI PESAN (AES-256-CBC)
-// Format BLOB tersimpan: "ENC1:" + IV (16 byte) + ciphertext
+// HELPER: ENKRIPSI PESAN (AES-256-GCM terautentikasi + kompatibilitas ENC1 CBC)
+// Format ENC2: "ENC2:" + IV (12 byte) + TAG (16 byte) + ciphertext
+// Format ENC1 (legacy): "ENC1:" + IV (16 byte) + ciphertext (AES-256-CBC)
 // ------------------------------------------------------------------------------
 
-/**
- * Kunci enkripsi 32 byte diturunkan dari secret.
- * Untuk produksi set environment variable WA_MSG_SECRET; untuk praktikum cukup default.
- */
 function waGetEncryptionKey(): string
 {
     $secret = getenv('WA_MSG_SECRET') ?: 'whatsapp-pppl-dev-secret-change-me';
@@ -33,17 +30,29 @@ function waGetEncryptionKey(): string
 
 function waEncryptMessage(string $plain): string
 {
-    $iv = random_bytes(16);
-    $cipher = openssl_encrypt($plain, 'aes-256-cbc', waGetEncryptionKey(), OPENSSL_RAW_DATA, $iv);
-    if ($cipher === false) {
+    $iv = random_bytes(12);
+    $tag = '';
+    $cipher = openssl_encrypt(
+        $plain,
+        'aes-256-gcm',
+        waGetEncryptionKey(),
+        OPENSSL_RAW_DATA,
+        $iv,
+        $tag,
+        '',
+        16
+    );
+    if ($cipher === false || strlen($tag) !== 16) {
         throw new RuntimeException('Gagal mengenkripsi pesan.');
     }
-    return 'ENC1:' . $iv . $cipher;
+    return 'ENC2:' . $iv . $tag . $cipher;
 }
 
 /**
- * Dekripsi isi_terenkripsi. Jika data bukan format ENC1 (mis. data sample lama),
- * coba base64 decode, lalu terakhir anggap teks biasa.
+ * Dekripsi isi_terenkripsi:
+ * - ENC2: AES-256-GCM terautentikasi
+ * - ENC1: AES-256-CBC (kompatibilitas data lama)
+ * - Plaintext UTF-8 (kompatibilitas sample_data.sql)
  */
 function waDecryptMessage($blob): string
 {
@@ -55,6 +64,21 @@ function waDecryptMessage($blob): string
     }
     $blob = (string)$blob;
 
+    if (strncmp($blob, 'ENC2:', 5) === 0 && strlen($blob) >= 33) {
+        $iv = substr($blob, 5, 12);
+        $tag = substr($blob, 17, 16);
+        $cipher = substr($blob, 33);
+        $plain = openssl_decrypt(
+            $cipher,
+            'aes-256-gcm',
+            waGetEncryptionKey(),
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+        return $plain === false ? '[Pesan tidak dapat didekripsi]' : $plain;
+    }
+
     if (strncmp($blob, 'ENC1:', 5) === 0 && strlen($blob) > 21) {
         $iv = substr($blob, 5, 16);
         $cipher = substr($blob, 21);
@@ -62,15 +86,6 @@ function waDecryptMessage($blob): string
         return $plain === false ? '[Pesan tidak dapat didekripsi]' : $plain;
     }
 
-    // Data lama / sample: coba base64
-    $decoded = base64_decode($blob, true);
-    if ($decoded !== false && $decoded !== ''
-        && mb_check_encoding($decoded, 'UTF-8')
-        && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', $decoded)) {
-        return $decoded;
-    }
-
-    // Anggap teks biasa
     return mb_check_encoding($blob, 'UTF-8') ? $blob : '[Pesan tidak dapat dibaca]';
 }
 
@@ -85,7 +100,6 @@ function waJsonResponse(array $payload, int $code = 200): void
     exit;
 }
 
-/** Membaca body JSON request (jika ada). */
 function waGetJsonInput(): array
 {
     $raw = file_get_contents('php://input');
@@ -113,6 +127,33 @@ function waFormatChatTime(?string $timestamp): string
         return 'Kemarin';
     }
     return date('d/m/Y', $t);
+}
+
+/** Label waktu relatif dalam Bahasa Indonesia untuk Status 24 Jam. */
+function waFormatTimeAgo(?string $datetime): string
+{
+    if (!$datetime) {
+        return 'Baru saja';
+    }
+    $time = strtotime($datetime);
+    if ($time === false) {
+        return 'Baru saja';
+    }
+    $diff = max(0, time() - $time);
+
+    if ($diff < 60) {
+        return 'Baru saja';
+    }
+    if ($diff < 3600) {
+        return floor($diff / 60) . ' menit lalu';
+    }
+    if ($diff < 86400) {
+        return floor($diff / 3600) . ' jam lalu';
+    }
+    if ($diff < 172800) {
+        return 'Kemarin pukul ' . date('H:i', $time);
+    }
+    return date('d/m/Y H:i', $time);
 }
 
 /** Cari id_percakapan antara dua pengguna (urutan kolom bebas). */
@@ -144,7 +185,7 @@ function waUserInConversation(PDO $pdo, int $conversationId, int $userId): bool
 /** Ubah satu baris tbl_pesan menjadi bentuk JSON untuk klien. */
 function waFormatMessage(array $row, int $currentUserId): array
 {
-    $ts = strtotime($row['created_at']);
+    $ts = strtotime((string)$row['created_at']);
     return [
         'id'              => (int)$row['id_pesan'],
         'conversation_id' => (int)$row['id_percakapan'],
@@ -163,18 +204,18 @@ function waFormatMessage(array $row, int $currentUserId): array
 if (basename($_SERVER['PHP_SELF'] ?? '') === 'messages.php') {
     header('Content-Type: application/json; charset=utf-8');
 
-    $userId = requireAuth(); // 401 otomatis jika belum login
-    $method = $_SERVER['REQUEST_METHOD'];
+    $userId = requireAuth();
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $input  = array_merge($_GET, $_POST, waGetJsonInput());
-    $action = $input['action'] ?? ($method === 'POST' ? 'send' : 'list');
+    $action = (string)($input['action'] ?? ($method === 'POST' ? 'send' : 'list'));
 
     try {
-        $pdo = getDbConnection();
+        $pdo = waGetDb();
 
         switch ($action) {
-            // ------------------------------------------------------------------
-            // POST api/messages.php?action=send
-            // ------------------------------------------------------------------
+            /**
+             * POST api/messages.php?action=send
+             */
             case 'send':
                 if ($method !== 'POST') {
                     waJsonResponse(['success' => false, 'message' => 'Gunakan metode POST untuk mengirim pesan.'], 405);
@@ -206,12 +247,15 @@ if (basename($_SERVER['PHP_SELF'] ?? '') === 'messages.php') {
                 $stmt->execute();
                 $newId = (int)$pdo->lastInsertId();
 
+                touchUserLastSeen($pdo, $userId);
+
                 $stmt = $pdo->prepare('
                     SELECT id_pesan, id_pengirim, id_percakapan, isi_terenkripsi, status_pesan, created_at
-                    FROM tbl_pesan WHERE id_pesan = :id
+                    FROM tbl_pesan
+                    WHERE id_pesan = :id
                 ');
                 $stmt->execute([':id' => $newId]);
-                $row = $stmt->fetch();
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
                 waJsonResponse([
                     'success' => true,
@@ -220,9 +264,9 @@ if (basename($_SERVER['PHP_SELF'] ?? '') === 'messages.php') {
                 ], 201);
                 break;
 
-            // ------------------------------------------------------------------
-            // GET api/messages.php?conversation_id={id}[&since_id={id}]
-            // ------------------------------------------------------------------
+            /**
+             * GET api/messages.php?conversation_id={id}[&since_id={id}]
+             */
             case 'list':
                 $conversationId = (int)($input['conversation_id'] ?? 0);
                 $sinceId = max(0, (int)($input['since_id'] ?? 0));
@@ -234,6 +278,16 @@ if (basename($_SERVER['PHP_SELF'] ?? '') === 'messages.php') {
                     waJsonResponse(['success' => false, 'message' => 'Anda bukan peserta percakapan ini.'], 403);
                 }
 
+                // Tandai pesan masuk dari lawan bicara sebagai 'dibaca' sebelum membaca list
+                $upd = $pdo->prepare("
+                    UPDATE tbl_pesan
+                    SET status_pesan = 'dibaca',
+                        diterima_at = COALESCE(diterima_at, NOW()),
+                        dibaca_at = NOW()
+                    WHERE id_percakapan = :conv AND id_pengirim <> :uid AND status_pesan <> 'dibaca'
+                ");
+                $upd->execute([':conv' => $conversationId, ':uid' => $userId]);
+
                 $stmt = $pdo->prepare('
                     SELECT id_pesan, id_pengirim, id_percakapan, isi_terenkripsi, status_pesan, created_at
                     FROM tbl_pesan
@@ -244,37 +298,50 @@ if (basename($_SERVER['PHP_SELF'] ?? '') === 'messages.php') {
 
                 $messages = [];
                 $lastId = $sinceId;
-                foreach ($stmt->fetchAll() as $row) {
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                     $messages[] = waFormatMessage($row, $userId);
                     $lastId = max($lastId, (int)$row['id_pesan']);
                 }
 
-                // Tandai pesan masuk (dari lawan bicara) sebagai 'dibaca'
-                $upd = $pdo->prepare("
-                    UPDATE tbl_pesan
-                    SET status_pesan = 'dibaca',
-                        diterima_at = COALESCE(diterima_at, NOW()),
-                        dibaca_at = NOW()
-                    WHERE id_percakapan = :conv AND id_pengirim <> :uid AND status_pesan <> 'dibaca'
+                // Kirim daftar status receipt terbaru untuk pesan milik user aktif (agar centang update real-time saat polling)
+                $receiptStmt = $pdo->prepare("
+                    SELECT id_pesan, status_pesan
+                    FROM tbl_pesan
+                    WHERE id_percakapan = :conv
+                      AND id_pengirim = :uid
+                      AND status_pesan IN ('diterima', 'dibaca')
                 ");
-                $upd->execute([':conv' => $conversationId, ':uid' => $userId]);
+                $receiptStmt->execute([':conv' => $conversationId, ':uid' => $userId]);
+                $deliveredIds = [];
+                $readIds = [];
+                foreach ($receiptStmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                    if ($r['status_pesan'] === 'dibaca') {
+                        $readIds[] = (int)$r['id_pesan'];
+                    } else {
+                        $deliveredIds[] = (int)$r['id_pesan'];
+                    }
+                }
+
+                touchUserLastSeen($pdo, $userId);
 
                 waJsonResponse([
-                    'success' => true,
-                    'data'    => $messages,
-                    'last_id' => $lastId,
+                    'success'       => true,
+                    'data'          => $messages,
+                    'last_id'       => $lastId,
+                    'delivered_ids' => $deliveredIds,
+                    'read_ids'      => $readIds,
                 ]);
                 break;
 
             default:
-                waJsonResponse(['success' => false, 'message' => 'Aksi tidak dikenali: ' . htmlspecialchars((string)$action)], 400);
+                waJsonResponse(['success' => false, 'message' => 'Aksi tidak dikenali.'], 400);
         }
     } catch (PDOException $e) {
-        error_log('[Messages API] ' . $e->getMessage());
-        waJsonResponse(['success' => false, 'message' => 'Terjadi kendala pada database: ' . $e->getMessage()], 500);
+        error_log('[Messages API DB Error] ' . $e->getMessage());
+        waJsonResponse(['success' => false, 'message' => 'Terjadi kendala pada database.'], 500);
     } catch (Throwable $e) {
-        error_log('[Messages API] ' . $e->getMessage());
-        waJsonResponse(['success' => false, 'message' => 'Terjadi kesalahan server: ' . $e->getMessage()], 500);
+        error_log('[Messages API Error] ' . $e->getMessage());
+        waJsonResponse(['success' => false, 'message' => 'Terjadi kesalahan pada server.'], 500);
     }
     exit;
 }

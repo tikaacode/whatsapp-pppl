@@ -1,5 +1,109 @@
 @import "tailwindcss";
-@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   WhatsNew — Y2K Glossy Neo-Retro Design System
+   Inspired by ui-references/new-ui-1.jpg (Phoning Chat) & new-ui-2.jpg (Sky Hub)
+   ========================================================================== */
+
+:root,
+[data-y2k-theme="acid-yellow"] {
+  --y2k-ink: #111300;
+  --y2k-ink-soft: #4c5146;
+  --y2k-ink-muted: #767b70;
+  --y2k-paper: #ffffff;
+  --y2k-paper-tint: #fbfff4;
+
+  /* Outer Desktop Stage & Sidebar Header (Periwinkle Sky from new-ui-2.jpg) */
+  --y2k-stage-top: #5b78f8;
+  --y2k-stage-mid: #82a5fa;
+  --y2k-stage-low: #d4e1fe;
+  --y2k-sidebar-hdr-top: #699af7;
+  --y2k-sidebar-hdr-mid: #9bbdfa;
+  --y2k-sidebar-hdr-low: #e6efff;
+
+  /* Chat Room Header & Bottom Bar (Acid Yellow from new-ui-1.jpg) */
+  --y2k-chat-hdr-top: #ffff2d;
+  --y2k-chat-hdr-mid: #fffe5e;
+  --y2k-chat-hdr-fade: #ffffc8;
+  --y2k-chat-hdr-sub: #2d4c05;
+  --y2k-composer-bg: #fefe00;
+
+  /* Glossy Accent (Incoming Bubbles, Active Row, Primary CTA Pills, Scroll Orb) */
+  --y2k-gloss-1: #ffffff;
+  --y2k-gloss-2: #eaf9da;
+  --y2k-gloss-3: #caefa1;
+  --y2k-gloss-4: #9ce74e;
+  --y2k-gloss-deep: #7bd224;
+
+  --y2k-badge-bg: #fefe00;
+  --y2k-tick: #69c616;
+  --y2k-ring-focus: rgba(156, 231, 78, 0.5);
+  --y2k-row-hover: #f7ffec;
+}
+
+[data-y2k-theme="sky-blue"] {
+  --y2k-ink: #111300;
+  --y2k-ink-soft: #434c63;
+  --y2k-ink-muted: #6c758c;
+  --y2k-paper: #ffffff;
+  --y2k-paper-tint: #f4f8ff;
+
+  --y2k-stage-top: #4f70f5;
+  --y2k-stage-mid: #82a7fb;
+  --y2k-stage-low: #d9e6ff;
+  --y2k-sidebar-hdr-top: #ffff3b;
+  --y2k-sidebar-hdr-mid: #f7ff85;
+  --y2k-sidebar-hdr-low: #f7ffe6;
+
+  --y2k-chat-hdr-top: #6495fa;
+  --y2k-chat-hdr-mid: #8fb4fc;
+  --y2k-chat-hdr-fade: #dbe8ff;
+  --y2k-chat-hdr-sub: #132c6b;
+  --y2k-composer-bg: #79a3ff;
+
+  --y2k-gloss-1: #ffffff;
+  --y2k-gloss-2: #e5efff;
+  --y2k-gloss-3: #b9d2ff;
+  --y2k-gloss-4: #84adff;
+  --y2k-gloss-deep: #5e8ef7;
+
+  --y2k-badge-bg: #fefe00;
+  --y2k-tick: #3b64e6;
+  --y2k-ring-focus: rgba(105, 154, 247, 0.45);
+  --y2k-row-hover: #f2f7ff;
+}
+
+[data-y2k-theme="candy-pink"] {
+  --y2k-ink: #111300;
+  --y2k-ink-soft: #5c4553;
+  --y2k-ink-muted: #876c7d;
+  --y2k-paper: #ffffff;
+  --y2k-paper-tint: #fff6fb;
+
+  --y2k-stage-top: #748bff;
+  --y2k-stage-mid: #adb9ff;
+  --y2k-stage-low: #eaeaff;
+  --y2k-sidebar-hdr-top: #ff8fce;
+  --y2k-sidebar-hdr-mid: #ffbae0;
+  --y2k-sidebar-hdr-low: #ffecf6;
+
+  --y2k-chat-hdr-top: #ff8fce;
+  --y2k-chat-hdr-mid: #ffb6df;
+  --y2k-chat-hdr-fade: #ffe6f4;
+  --y2k-chat-hdr-sub: #6b1244;
+  --y2k-composer-bg: #ffa1d6;
+
+  --y2k-gloss-1: #ffffff;
+  --y2k-gloss-2: #ffeaf6;
+  --y2k-gloss-3: #ffc4e5;
+  --y2k-gloss-4: #ff94d0;
+  --y2k-gloss-deep: #f06cb6;
+
+  --y2k-badge-bg: #fefe00;
+  --y2k-tick: #d9368b;
+  --y2k-ring-focus: rgba(255, 148, 208, 0.5);
+  --y2k-row-hover: #fff4fa;
+}
 
 @layer base {
   * {
@@ -8,34 +112,352 @@
   }
 
   body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    transition: background-color 0.45s cubic-bezier(0.22, 1, 0.36, 1), color 0.35s ease;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: var(--y2k-ink);
+    background-color: #ffffff;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
-.wallpaper-text-crisp {
-  text-shadow: 0 1px 1.5px rgba(255, 255, 255, 0.35);
-}
-html.dark .wallpaper-text-crisp {
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-}
-
-.device-shell {
-  background: #e2e8e5;
-  box-shadow:
-    0 30px 70px -15px rgba(0, 0, 0, 0.28),
-    0 0 0 1px rgba(255, 255, 255, 0.45),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.45);
-  transition: background-color 0.45s ease, box-shadow 0.45s ease;
-}
-html.dark .device-shell {
-  background: #090c0b;
-  box-shadow:
-    0 35px 85px -15px rgba(0, 0, 0, 0.85),
-    0 0 0 1px rgba(255, 255, 255, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+@layer components {
+/* Scanline Gradients */
+.y2k-stage-bg {
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.2) 0px,
+      rgba(255, 255, 255, 0.2) 1.5px,
+      transparent 1.5px,
+      transparent 5px
+    ),
+    linear-gradient(
+      180deg,
+      var(--y2k-stage-top) 0%,
+      var(--y2k-stage-mid) 34%,
+      var(--y2k-stage-low) 72%,
+      #ffffff 100%
+    );
 }
 
+.y2k-chat-header-bg {
+  background: linear-gradient(
+    180deg,
+    var(--y2k-chat-hdr-top) 0%,
+    var(--y2k-chat-hdr-mid) 44%,
+    var(--y2k-chat-hdr-fade) 80%,
+    #ffffff 100%
+  );
+}
+
+.y2k-sidebar-header-bg {
+  background: linear-gradient(
+    180deg,
+    var(--y2k-sidebar-hdr-top) 0%,
+    var(--y2k-sidebar-hdr-mid) 58%,
+    var(--y2k-sidebar-hdr-low) 100%
+  );
+}
+
+/* Condensed Outlined Serif Wordmark (new-ui-2.jpg) — clean paint-order + solid drop-shadow */
+.y2k-wordmark-hero {
+  font-family: 'Bodoni Moda', Georgia, serif;
+  font-size: clamp(2.85rem, 6vw, 4rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+  -webkit-text-stroke: 3.2px var(--y2k-ink);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 3px 0 var(--y2k-ink));
+  transform: scaleX(0.8);
+  display: inline-block;
+}
+
+.y2k-wordmark-md {
+  font-family: 'Bodoni Moda', Georgia, serif;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  color: #ffffff;
+  -webkit-text-stroke: 2.2px var(--y2k-ink);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 1.5px 0 var(--y2k-ink));
+  transform: scaleX(0.86);
+  transform-origin: left center;
+  display: inline-block;
+}
+
+.y2k-wordmark-sm {
+  font-family: 'Bodoni Moda', Georgia, serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  color: #ffffff;
+  -webkit-text-stroke: 2px var(--y2k-ink);
+  paint-order: stroke fill;
+  filter: drop-shadow(0 1.5px 0 var(--y2k-ink));
+  transform: scaleX(0.86);
+  transform-origin: left center;
+  display: inline-block;
+}
+
+/* Surfaces & Panels */
+.y2k-panel {
+  background: #ffffff;
+  border: 1.5px solid var(--y2k-ink);
+  box-shadow: 0 3px 0 var(--y2k-ink);
+}
+
+.y2k-modal-card {
+  background: #ffffff;
+  border: 1.5px solid var(--y2k-ink);
+  box-shadow: 0 5px 0 var(--y2k-ink);
+}
+
+/* Crisp Circular Icon Button */
+.y2k-circle-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1.5px solid var(--y2k-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--y2k-ink);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+.y2k-circle-btn:hover {
+  background-color: var(--y2k-row-hover);
+  transform: translateY(-1px);
+}
+.y2k-circle-btn:active {
+  transform: scale(0.95);
+}
+
+/* Glossy 3D Y2K Pill Buttons */
+.y2k-pill-accent {
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--y2k-ink);
+  border-radius: 999px;
+  border: 1.5px solid var(--y2k-ink);
+  background: linear-gradient(
+    180deg,
+    var(--y2k-gloss-1) 0%,
+    var(--y2k-gloss-2) 22%,
+    var(--y2k-gloss-3) 56%,
+    var(--y2k-gloss-4) 86%,
+    var(--y2k-gloss-deep) 100%
+  );
+  box-shadow:
+    0 3px 0 var(--y2k-ink),
+    inset 0 2px 3px rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.y2k-pill-accent:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 4px 0 var(--y2k-ink),
+    inset 0 2px 4px rgba(255, 255, 255, 0.95);
+}
+.y2k-pill-accent:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--y2k-ink);
+}
+.y2k-pill-accent:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.y2k-serif-btn {
+  font-family: 'Bodoni Moda', Georgia, serif;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.y2k-pill-silver {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--y2k-ink);
+  border-radius: 999px;
+  border: 1.5px solid var(--y2k-ink);
+  background: linear-gradient(
+    180deg,
+    #ffffff 0%,
+    #eceef2 26%,
+    #cfd4dd 64%,
+    #aeb5c2 100%
+  );
+  box-shadow:
+    0 2.5px 0 var(--y2k-ink),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.y2k-pill-silver:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.y2k-pill-silver:active:not(:disabled) {
+  transform: translateY(1.5px);
+  box-shadow: 0 1px 0 var(--y2k-ink);
+}
+
+.y2k-pill-danger {
+  font-weight: 800;
+  font-size: 12.5px;
+  color: var(--y2k-ink);
+  border-radius: 999px;
+  border: 1.5px solid var(--y2k-ink);
+  background: linear-gradient(180deg, #ffffff 0%, #ffe2e8 30%, #ff9eb2 100%);
+  box-shadow:
+    0 2.5px 0 var(--y2k-ink),
+    inset 0 2px 2px rgba(255, 255, 255, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.y2k-pill-danger:hover {
+  transform: translateY(-1px);
+}
+.y2k-pill-danger:active {
+  transform: translateY(1.5px);
+  box-shadow: 0 1px 0 var(--y2k-ink);
+}
+
+/* Glossy Action Orb */
+.y2k-orb-accent {
+  border-radius: 999px;
+  border: 1.5px solid var(--y2k-ink);
+  background: linear-gradient(
+    180deg,
+    var(--y2k-gloss-1) 0%,
+    var(--y2k-gloss-2) 28%,
+    var(--y2k-gloss-4) 76%,
+    var(--y2k-gloss-deep) 100%
+  );
+  box-shadow:
+    0 2.5px 0 var(--y2k-ink),
+    inset 0 2px 3px rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--y2k-ink);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.y2k-orb-accent:hover {
+  transform: translateY(-1px);
+}
+.y2k-orb-accent:active {
+  transform: translateY(1.5px);
+  box-shadow: 0 1px 0 var(--y2k-ink);
+}
+
+/* Chat Speech Bubbles (1:1 new-ui-1.jpg) */
+.y2k-bubble-in {
+  border: 1.5px solid var(--y2k-ink);
+  border-radius: 0 21px 21px 21px;
+  background: linear-gradient(
+    180deg,
+    var(--y2k-gloss-1) 0%,
+    var(--y2k-gloss-2) 26%,
+    var(--y2k-gloss-3) 62%,
+    var(--y2k-gloss-4) 100%
+  );
+  color: var(--y2k-ink);
+}
+
+.y2k-bubble-out {
+  border: 1.5px solid var(--y2k-ink);
+  border-radius: 21px 0 21px 21px;
+  background: #ffffff;
+  color: var(--y2k-ink);
+}
+
+/* Sidebar Row Cards */
+.y2k-list-row {
+  border: 1.5px solid var(--y2k-ink);
+  border-radius: 18px;
+  background: #ffffff;
+  transition: transform 0.1s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+.y2k-list-row:hover {
+  background: var(--y2k-row-hover);
+}
+.y2k-list-row-active {
+  border: 1.5px solid var(--y2k-ink);
+  border-radius: 18px;
+  background: linear-gradient(
+    180deg,
+    var(--y2k-gloss-1) 0%,
+    var(--y2k-gloss-2) 34%,
+    var(--y2k-gloss-4) 100%
+  );
+  box-shadow: 0 2.5px 0 var(--y2k-ink);
+}
+
+/* Active Dock Tab */
+.y2k-dock-tab-active {
+  color: var(--y2k-ink);
+  border: 1.5px solid var(--y2k-ink);
+  background: linear-gradient(
+    180deg,
+    var(--y2k-gloss-1) 0%,
+    var(--y2k-gloss-2) 32%,
+    var(--y2k-gloss-4) 100%
+  );
+  box-shadow: inset 0 1.5px 2px rgba(255, 255, 255, 0.9);
+}
+
+/* Retro Inputs */
+.y2k-input {
+  border: 1.5px solid var(--y2k-ink);
+  background: #ffffff;
+  color: var(--y2k-ink);
+  outline: none;
+  transition: box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.y2k-input:focus {
+  background: var(--y2k-paper-tint);
+  box-shadow: 0 0 0 3px var(--y2k-ring-focus);
+}
+
+/* Status Rings */
+.y2k-status-ring {
+  padding: 2.5px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffff2d 0%, var(--y2k-gloss-4) 100%);
+  border: 1.5px solid var(--y2k-ink);
+}
+.y2k-status-ring-seen {
+  padding: 2.5px;
+  border-radius: 999px;
+  background: #d8dce3;
+  border: 1.5px solid var(--y2k-ink);
+}
+}
+
+/* Scrollbars */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
@@ -44,24 +466,12 @@ html.dark .device-shell {
   scrollbar-width: none;
 }
 
-.status-ring {
-  background: linear-gradient(145deg, #22c55e, #15803d);
-  padding: 2px;
-}
-.status-ring-seen {
-  background: rgba(148, 163, 184, 0.42);
-  padding: 2px;
-}
-
-/* Fallback untuk layar landscape yang sangat pendek */
+/* Fallback untuk layar landscape sangat pendek */
 @media (max-height: 560px) {
   body.studio-shell {
     height: auto;
     max-height: none;
     min-height: 100dvh;
     overflow-y: auto;
-  }
-  #phone-stage {
-    min-height: 520px;
   }
 }
